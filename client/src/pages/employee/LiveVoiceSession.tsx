@@ -1,0 +1,313 @@
+import { useEffect, useRef, useState } from "react";
+import { Redirect, useLocation } from "wouter";
+import { Mic, MicOff, PhoneOff, Loader2, User, Video, VideoOff, ChevronLeft, Wifi, WifiOff } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
+import { trpc } from "@/lib/trpc";
+import { useSimulator } from "@/contexts/SimulatorContext";
+import { useLiveVoiceSession } from "@/features/live-voice/useLiveVoiceSession";
+import { familyLabels } from "@/features/simulator/config";
+
+const stateLabels: Record<string, string> = {
+  idle: "Ready",
+  requesting_permissions: "Microphone",
+  requesting_credentials: "Preparing",
+  connecting: "Connecting",
+  connected: "Connected",
+  reconnecting: "Reconnecting",
+  fallback: "Fallback",
+  ended: "Ended",
+  error: "Error",
+};
+
+const stateClasses: Record<string, string> = {
+  idle: "bg-muted/10 text-muted-foreground",
+  requesting_permissions: "bg-amber-500/10 text-amber-400",
+  requesting_credentials: "bg-amber-500/10 text-amber-400",
+  connecting: "bg-amber-500/10 text-amber-400",
+  connected: "bg-green-500/10 text-green-400",
+  reconnecting: "bg-amber-500/10 text-amber-400",
+  fallback: "bg-red-500/10 text-red-400",
+  ended: "bg-muted/10 text-muted-foreground",
+  error: "bg-red-500/10 text-red-400",
+};
+
+export default function LiveVoiceSession() {
+  const [, setLocation] = useLocation();
+  const {
+    scenario,
+    config,
+    setConfig,
+    setEvaluation,
+    setCoaching,
+    setManagerDebrief,
+    setSaveStatus,
+    setSavedSessionId,
+  } = useSimulator();
+  const [isFinalizing, setIsFinalizing] = useState(false);
+  const finalizedRef = useRef(false);
+  const selfVideoRef = useRef<HTMLVideoElement | null>(null);
+  const utils = trpc.useUtils();
+  const evaluateMutation = trpc.simulator.evaluate.useMutation();
+  const saveSessionMutation = trpc.simulator.saveSession.useMutation();
+
+  const liveSession = useLiveVoiceSession({
+    scenario: scenario as any,
+    config,
+  });
+
+  useEffect(() => {
+    if (!scenario) return;
+    void liveSession.startCall();
+  }, [scenario]);
+
+  useEffect(() => {
+    if (!selfVideoRef.current) return;
+    selfVideoRef.current.srcObject = liveSession.selfVideoStream;
+  }, [liveSession.selfVideoStream]);
+
+  if (!scenario) return <Redirect to="/practice" />;
+
+  const finishSession = async () => {
+    if (finalizedRef.current) return;
+    finalizedRef.current = true;
+    setIsFinalizing(true);
+    setSaveStatus("saving");
+
+    try {
+      const result = await evaluateMutation.mutateAsync({
+        scenarioJson: scenario,
+        transcript: liveSession.transcript,
+        employeeRole: config.employeeRole,
+        stateHistory: [],
+      });
+
+      const evalResult = result.evaluation as any;
+      const coachingResult = result.coaching as any;
+      const managerDebriefResult = result.managerDebrief as any;
+      const policyGrounding = result.policyGrounding as any;
+      const visibleBehavior = result.visibleBehavior as any;
+      const sessionQuality = result.sessionQuality as any;
+      const processingStatus = (result.processingStatus as "completed" | "invalid" | "reprocess" | undefined) || "completed";
+      const processingFailure = result.failure as { message?: string } | undefined;
+
+      const saveResult = await saveSessionMutation.mutateAsync({
+        scenarioId: scenario.scenario_id,
+        scenarioTemplateId: config.scenarioTemplateId,
+        assignmentId: config.assignmentId,
+        department: (config.department || scenario.department) as "customer_service" | "golf" | "mod_emergency" | undefined,
+        scenarioFamily: scenario.scenario_family || (scenario as any).issue_type,
+        employeeRole: config.employeeRole,
+        difficulty: scenario.difficulty,
+        mode: "live_voice",
+        scenarioJson: scenario,
+        transcript: liveSession.transcript,
+        turnEvents: liveSession.turnEvents,
+        timingMarkers: liveSession.timingMarkers,
+        stateHistory: [],
+        policyGrounding,
+        visibleBehavior,
+        evaluationResult: evalResult,
+        coachingResult,
+        managerDebrief: managerDebriefResult,
+        sessionQuality: sessionQuality?.session_quality,
+        lowEffortResult: sessionQuality,
+        overallScore: processingStatus === "completed" ? evalResult?.overall_score : undefined,
+        passFail: processingStatus === "completed" ? evalResult?.pass_fail : undefined,
+        readinessSignal: processingStatus === "completed" ? evalResult?.readiness_signal : undefined,
+        categoryScores: processingStatus === "completed" ? evalResult?.category_scores : undefined,
+        status: processingStatus,
+        flagReason: processingFailure?.message || sessionQuality?.reason,
+      });
+
+      if (evalResult) setEvaluation(evalResult);
+      if (coachingResult) setCoaching(coachingResult);
+      if (managerDebriefResult) setManagerDebrief(managerDebriefResult);
+      setSavedSessionId(saveResult.sessionId ?? null);
+      await Promise.all([
+        utils.sessions.myRecent.invalidate(),
+        utils.profile.me.invalidate(),
+        utils.assignments.myAssignments.invalidate(),
+      ]);
+      setSaveStatus("saved");
+      if (processingStatus !== "completed") {
+        toast.warning(processingFailure?.message || "This live session was flagged for reprocessing.");
+      }
+      setLocation("/practice/results");
+    } catch (error) {
+      console.error("[Live Voice] finalize failed", error);
+      setSaveStatus("error");
+      setSavedSessionId(null);
+      toast.error("The live session ended, but evaluation or save failed.");
+      finalizedRef.current = false;
+      setIsFinalizing(false);
+    }
+  };
+
+  const handleEndCall = async () => {
+    liveSession.endCall();
+    await finishSession();
+  };
+
+  const switchToTextPractice = () => {
+    setConfig({
+      ...config,
+      mode: "in-person",
+    });
+    setLocation("/practice/session");
+  };
+
+  const canToggleVideo = liveSession.connectionState !== "ended" && !isFinalizing;
+  const modeLabel = config.mode === "live-voice" ? "Live Voice Call" : "Voice Session";
+  const scenarioLabel = familyLabels[scenario.scenario_family || ""] || scenario.scenario_family || "Customer interaction";
+  const isFallbackMode = liveSession.connectionState === "fallback";
+
+  return (
+    <div className="min-h-screen bg-background text-foreground flex flex-col">
+      <div className="px-4 pt-4 pb-3 border-b border-border bg-card/80 backdrop-blur">
+        <div className="flex items-center justify-between gap-3">
+          <button onClick={() => setLocation("/practice/intro")} className="text-muted-foreground hover:text-foreground" disabled={isFinalizing}>
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+          <div className="text-center flex-1 min-w-0">
+            <div className="text-[10px] font-mono tracking-wider uppercase text-teal">Live Voice</div>
+            <div className="text-sm font-semibold truncate">{scenario.customer_persona?.name || "Customer"}</div>
+            <div className="text-xs text-muted-foreground truncate">{modeLabel} · {scenarioLabel}</div>
+          </div>
+          <Badge variant="outline" className={`border-0 ${stateClasses[liveSession.connectionState] || stateClasses.idle}`}>
+            {liveSession.connectionState === "connected" ? <Wifi className="h-3 w-3 mr-1" /> : <WifiOff className="h-3 w-3 mr-1" />}
+            {stateLabels[liveSession.connectionState] || liveSession.connectionState}
+          </Badge>
+        </div>
+      </div>
+
+      <div className="flex-1 flex flex-col px-4 py-5 gap-5 max-w-lg mx-auto w-full">
+        <div className="panel p-5 text-center space-y-3">
+          <div className="inline-flex w-20 h-20 items-center justify-center rounded-full bg-teal/10 border border-teal/20">
+            <User className="h-9 w-9 text-teal" />
+          </div>
+          <div>
+            <div className="text-lg font-semibold">{scenario.customer_persona?.name}</div>
+            <div className="text-sm text-muted-foreground">{scenario.customer_persona?.communication_style} · {scenario.customer_persona?.initial_emotion}</div>
+          </div>
+          <div className="text-xs text-muted-foreground">{scenario.situation_summary}</div>
+          <div className="text-3xl font-mono font-bold tracking-tight">{liveSession.formattedDuration}</div>
+          {liveSession.connectionState !== "connected" && (
+            <div className="text-sm text-muted-foreground">
+              {liveSession.credentialPending || liveSession.connectionState === "connecting" || liveSession.connectionState === "requesting_credentials"
+                ? "Starting secure audio session..."
+                : liveSession.lastError || "Waiting for connection."}
+            </div>
+          )}
+          {isFallbackMode && (
+            <div className="space-y-3 pt-2">
+              <div className="text-sm text-amber-400">
+                Live voice is not available in this local setup. Continue this exact scenario in text practice.
+              </div>
+              <Button
+                onClick={switchToTextPractice}
+                className="w-full bg-teal text-slate-deep hover:bg-teal/90"
+              >
+                Continue in Text Practice
+              </Button>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="panel p-4">
+            <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground mb-2">Call State</div>
+            <div className="text-sm font-medium">{stateLabels[liveSession.connectionState]}</div>
+            <div className="text-xs text-muted-foreground mt-1">{liveSession.turnEvents.length} events · {liveSession.transcript.length} transcript turns</div>
+          </div>
+          <div className="panel p-4">
+            <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground mb-2">Scenario</div>
+            <div className="text-sm font-medium truncate">{scenarioLabel}</div>
+            <div className="text-xs text-muted-foreground mt-1">Difficulty {scenario.difficulty}</div>
+          </div>
+        </div>
+
+        <div className="panel p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground">Self Video</div>
+              <div className="text-sm text-muted-foreground">Optional preview only. Not required for voice transport.</div>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => void liveSession.toggleSelfVideo()} disabled={!canToggleVideo} className="gap-2">
+              {liveSession.selfVideoEnabled ? <VideoOff className="h-4 w-4" /> : <Video className="h-4 w-4" />}
+              {liveSession.selfVideoEnabled ? "Hide" : "Show"}
+            </Button>
+          </div>
+          <div className="rounded-xl border border-border bg-background/60 overflow-hidden min-h-40 flex items-center justify-center">
+            {liveSession.selfVideoEnabled && liveSession.selfVideoStream ? (
+              <video ref={selfVideoRef} autoPlay muted playsInline className="w-full h-56 object-cover" />
+            ) : (
+              <div className="text-sm text-muted-foreground">Self video is off</div>
+            )}
+          </div>
+        </div>
+
+        <div className="panel p-4 space-y-3">
+          <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground">Live Transcript</div>
+          <div className="space-y-2 max-h-56 overflow-y-auto">
+            {liveSession.transcript.length === 0 ? (
+              <div className="text-sm text-muted-foreground">Transcript will appear here as audio transcription events arrive.</div>
+            ) : (
+              liveSession.transcript.slice(-6).map((turn, index) => (
+                <div key={`${turn.role}-${turn.timestamp}-${index}`} className={`rounded-lg border p-3 ${turn.role === "customer" ? "border-red-500/10 bg-red-500/5" : "border-teal/10 bg-teal/5"}`}>
+                  <div className={`text-[10px] font-mono uppercase tracking-wider ${turn.role === "customer" ? "text-red-400" : "text-teal"}`}>{turn.role}</div>
+                  <div className="text-sm mt-1">{turn.message}</div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="sticky bottom-0 bg-card/90 backdrop-blur border-t border-border px-4 py-4">
+        {isFallbackMode && !isFinalizing ? (
+          <div className="max-w-lg mx-auto flex items-center gap-3">
+            <Button
+              type="button"
+              className="flex-1 h-14 rounded-xl bg-teal text-slate-deep hover:bg-teal/90"
+              onClick={switchToTextPractice}
+            >
+              Continue in Text Practice
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1 h-14 rounded-xl"
+              onClick={() => setLocation("/practice/intro")}
+            >
+              Back to Briefing
+            </Button>
+          </div>
+        ) : (
+          <div className="max-w-lg mx-auto flex items-center gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1 h-14 rounded-xl gap-2"
+              onClick={() => liveSession.toggleMute()}
+              disabled={isFinalizing || liveSession.connectionState === "fallback"}
+            >
+              {liveSession.isMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
+              {liveSession.isMuted ? "Unmute" : "Mute"}
+            </Button>
+            <Button
+              type="button"
+              className="flex-1 h-14 rounded-xl bg-red-500 text-white hover:bg-red-500/90 gap-2"
+              onClick={() => void handleEndCall()}
+              disabled={isFinalizing}
+            >
+              {isFinalizing ? <Loader2 className="h-5 w-5 animate-spin" /> : <PhoneOff className="h-5 w-5" />}
+              {isFinalizing ? "Finalizing" : "End Call"}
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

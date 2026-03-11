@@ -6,6 +6,7 @@ import { useLocation, Redirect } from "wouter";
 import { useState, useRef, useEffect } from "react";
 import { Loader2, Send, X, User, Headphones } from "lucide-react";
 import { toast } from "sonner";
+import { getScenarioGoal } from "@shared/wsc-content";
 
 export default function PracticeSession() {
   const [, setLocation] = useLocation();
@@ -49,6 +50,7 @@ export default function PracticeSession() {
 
   if (!scenario) return <Redirect to="/practice" />;
   const targetTurns = Math.max(3, Math.min(5, scenario.recommended_turns || 4));
+  const scenarioGoal = getScenarioGoal(scenario);
 
   const handleSend = async () => {
     if (!input.trim() || isProcessing) return;
@@ -218,11 +220,19 @@ export default function PracticeSession() {
   const emotionColors: Record<string, string> = {
     calm: "text-green-400",
     relieved: "text-green-400",
+    reassured: "text-green-400",
+    steady: "text-green-400",
     concerned: "text-yellow-400",
+    unsettled: "text-yellow-400",
     confused: "text-yellow-400",
     skeptical: "text-amber-400",
+    guarded: "text-amber-400",
+    stressed: "text-amber-400",
+    protective: "text-amber-400",
     frustrated: "text-amber-400",
     angry: "text-red-400",
+    upset: "text-red-400",
+    alarmed: "text-red-400",
   };
 
   return (
@@ -256,6 +266,11 @@ export default function PracticeSession() {
         </div>
         <div className="mt-2 text-[10px] font-mono text-muted-foreground tracking-wider uppercase">
           {isEvaluating ? evaluationStep || "Evaluating" : isProcessing ? "Customer responding" : isComplete ? "Ready for evaluation" : "Live session"}
+        </div>
+        <div className="mt-2 rounded-lg border border-border bg-card/60 px-3 py-2">
+          <div className="text-[10px] font-mono text-muted-foreground tracking-wider uppercase">Conversation Goal</div>
+          <div className="text-sm font-medium">{scenarioGoal.title}</div>
+          <div className="text-xs text-muted-foreground mt-0.5">{scenarioGoal.description}</div>
         </div>
       </div>
 

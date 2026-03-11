@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { useLocation, Redirect } from "wouter";
 import { Play, AlertTriangle, User, Phone, Users, Mic } from "lucide-react";
 import { familyLabels } from "@/features/simulator/config";
+import { getScenarioGoal } from "@shared/wsc-content";
 
 export default function ScenarioIntro() {
   const [, setLocation] = useLocation();
@@ -12,6 +13,7 @@ export default function ScenarioIntro() {
   if (!scenario) return <Redirect to="/practice" />;
 
   const persona = scenario.customer_persona;
+  const scenarioGoal = getScenarioGoal(scenario);
 
   return (
     <div className="min-h-screen bg-background p-4 max-w-lg mx-auto flex flex-col">
@@ -61,6 +63,12 @@ export default function ScenarioIntro() {
         <div className="panel p-4">
           <div className="text-[10px] font-mono text-muted-foreground tracking-wider uppercase mb-2">Situation</div>
           <p className="text-sm leading-relaxed">{scenario.situation_summary}</p>
+        </div>
+
+        <div className="panel p-4">
+          <div className="text-[10px] font-mono text-muted-foreground tracking-wider uppercase mb-2">Primary Goal</div>
+          <div className="text-sm font-medium">{scenarioGoal.title}</div>
+          <p className="mt-1 text-sm text-muted-foreground leading-relaxed">{scenarioGoal.description}</p>
         </div>
 
         {/* What to handle */}

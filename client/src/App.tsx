@@ -39,8 +39,10 @@ import EmployeeLayout from "./components/EmployeeLayout";
 import ManagerLayout from "./components/ManagerLayout";
 
 // ─── Auth Gate ───
-import { getLoginUrl, hasAuthConfig } from "@/const";
+import { hasAuthConfig } from "@/const";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { supabase } from "@/lib/supabase";
 
 function LoadingScreen() {
   return (
@@ -55,34 +57,40 @@ function LoadingScreen() {
 
 function LoginScreen() {
   const authConfigured = hasAuthConfig();
-  const loginUrl = getLoginUrl();
-  const [localRole, setLocalRole] = useState<"employee" | "manager" | "admin">("employee");
-  const [isStartingLocal, setIsStartingLocal] = useState(false);
+  const [mode, setMode] = useState<"sign_in" | "sign_up">("sign_in");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const startLocalSession = async () => {
-    setIsStartingLocal(true);
+  const handleSubmit = async () => {
+    setIsSubmitting(true);
+    setError(null);
     try {
-      const response = await fetch("/api/local-auth/session", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify({
-          role: localRole,
-          department: localRole === "employee" ? "customer_service" : "customer_service",
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error("Local auth failed");
+      if (mode === "sign_in") {
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (signInError) throw signInError;
+      } else {
+        const { error: signUpError } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              name,
+              full_name: name,
+            },
+          },
+        });
+        if (signUpError) throw signUpError;
       }
-
-      window.location.reload();
     } catch (error) {
-      console.error(error);
+      setError(error instanceof Error ? error.message : "Authentication failed");
     } finally {
-      setIsStartingLocal(false);
+      setIsSubmitting(false);
     }
   };
 
@@ -97,53 +105,63 @@ function LoginScreen() {
         <h1 className="text-xl font-semibold">WSC Training Simulator</h1>
         <p className="text-sm text-muted-foreground">
           {authConfigured
-            ? "Sign in to access your training dashboard."
-            : "Choose a demo role to continue. External auth can be added later without changing the app flow."}
+            ? "Sign in with your Supabase-backed account."
+            : "Supabase auth is not configured yet. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY."}
         </p>
-        {!authConfigured && (
+        {authConfigured ? (
           <div className="space-y-3">
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { value: "employee", label: "Employee" },
-                { value: "manager", label: "Manager" },
-                { value: "admin", label: "Admin" },
-              ].map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => setLocalRole(option.value as "employee" | "manager" | "admin")}
-                  className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
-                    localRole === option.value
-                      ? "border-teal/40 bg-teal/10 text-teal"
-                      : "border-border bg-secondary/30 text-muted-foreground"
-                  }`}
-                >
-                  {option.label}
-                </button>
-              ))}
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant={mode === "sign_in" ? "default" : "outline"}
+                onClick={() => setMode("sign_in")}
+                className={mode === "sign_in" ? "bg-teal text-slate-deep hover:bg-teal/90" : ""}
+              >
+                Sign In
+              </Button>
+              <Button
+                type="button"
+                variant={mode === "sign_up" ? "default" : "outline"}
+                onClick={() => setMode("sign_up")}
+                className={mode === "sign_up" ? "bg-teal text-slate-deep hover:bg-teal/90" : ""}
+              >
+                Sign Up
+              </Button>
             </div>
-            <Button
-              onClick={() => void startLocalSession()}
-              className="w-full bg-teal text-slate-deep hover:bg-teal/90 font-semibold"
-              size="lg"
-              disabled={isStartingLocal}
-            >
-              {isStartingLocal ? "Starting Local Session..." : `Continue as ${localRole.charAt(0).toUpperCase()}${localRole.slice(1)}`}
+            {mode === "sign_up" && (
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Full name"
+                className="bg-card border-border"
+              />
+            )}
+            <Input
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Email"
+              type="email"
+              className="bg-card border-border"
+            />
+            <Input
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password"
+              type="password"
+              className="bg-card border-border"
+            />
+            {error && <p className="text-sm text-red-400">{error}</p>}
+            <Button onClick={() => void handleSubmit()} className="w-full bg-teal text-slate-deep hover:bg-teal/90 font-semibold" size="lg" disabled={isSubmitting || !email || !password || (mode === "sign_up" && !name)}>
+              {isSubmitting ? "Working..." : mode === "sign_in" ? "Sign In" : "Create Account"}
             </Button>
           </div>
-        )}
-        {authConfigured && (
+        ) : (
           <Button
-            onClick={() => {
-              if (loginUrl) {
-                window.location.href = loginUrl;
-              }
-            }}
             className="w-full bg-teal text-slate-deep hover:bg-teal/90 font-semibold"
             size="lg"
-            disabled={!loginUrl}
+            disabled
           >
-            Sign In
+            Auth Not Configured
           </Button>
         )}
       </div>

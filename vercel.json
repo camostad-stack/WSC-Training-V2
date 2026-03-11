@@ -3,7 +3,10 @@
   "installCommand": "pnpm install --frozen-lockfile",
   "buildCommand": "pnpm build:vercel",
   "functions": {
-    "api/[...all].ts": {
+    "api/trpc/index.ts": {
+      "maxDuration": 30
+    },
+    "api/trpc/[...trpc].ts": {
       "maxDuration": 30
     }
   },

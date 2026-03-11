@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Redirect, useLocation } from "wouter";
-import { Mic, MicOff, PhoneOff, Loader2, User, Video, VideoOff, ChevronLeft, Wifi, WifiOff } from "lucide-react";
+import { Mic, MicOff, PhoneOff, Loader2, User, Video, VideoOff, ChevronLeft, Wifi, WifiOff, RotateCcw, Send } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useSimulator } from "@/contexts/SimulatorContext";
 import { useLiveVoiceSession } from "@/features/live-voice/useLiveVoiceSession";
 import { familyLabels } from "@/features/simulator/config";
+import { getLiveVoiceGuidance } from "@/features/live-voice/ux";
+import { getScenarioGoal } from "@shared/wsc-content";
 
 const stateLabels: Record<string, string> = {
   idle: "Ready",
@@ -33,6 +36,14 @@ const stateClasses: Record<string, string> = {
   error: "bg-red-500/10 text-red-400",
 };
 
+const guidanceToneClasses = {
+  neutral: "border-border bg-background/60 text-foreground",
+  info: "border-teal/20 bg-teal/5 text-foreground",
+  warning: "border-amber-500/20 bg-amber-500/5 text-foreground",
+  success: "border-green-500/20 bg-green-500/5 text-foreground",
+  danger: "border-red-500/20 bg-red-500/5 text-foreground",
+} as const;
+
 export default function LiveVoiceSession() {
   const [, setLocation] = useLocation();
   const {
@@ -46,6 +57,8 @@ export default function LiveVoiceSession() {
     setSavedSessionId,
   } = useSimulator();
   const [isFinalizing, setIsFinalizing] = useState(false);
+  const [manualReply, setManualReply] = useState("");
+  const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const finalizedRef = useRef(false);
   const selfVideoRef = useRef<HTMLVideoElement | null>(null);
   const utils = trpc.useUtils();
@@ -80,7 +93,7 @@ export default function LiveVoiceSession() {
         scenarioJson: scenario,
         transcript: liveSession.transcript,
         employeeRole: config.employeeRole,
-        stateHistory: [],
+        stateHistory: liveSession.stateHistory,
       });
 
       const evalResult = result.evaluation as any;
@@ -105,7 +118,12 @@ export default function LiveVoiceSession() {
         transcript: liveSession.transcript,
         turnEvents: liveSession.turnEvents,
         timingMarkers: liveSession.timingMarkers,
-        stateHistory: [],
+        stateHistory: liveSession.stateHistory.map((snapshot) => ({
+          ...snapshot,
+          employee_flags: snapshot.employee_flags ?? {},
+          escalation_required: snapshot.escalation_required ?? false,
+          scenario_risk_level: snapshot.scenario_risk_level ?? "moderate",
+        })),
         policyGrounding,
         visibleBehavior,
         evaluationResult: evalResult,
@@ -161,7 +179,35 @@ export default function LiveVoiceSession() {
   const canToggleVideo = liveSession.connectionState !== "ended" && !isFinalizing;
   const modeLabel = config.mode === "live-voice" ? "Live Voice Call" : "Voice Session";
   const scenarioLabel = familyLabels[scenario.scenario_family || ""] || scenario.scenario_family || "Customer interaction";
+  const scenarioGoal = getScenarioGoal(scenario);
   const isFallbackMode = liveSession.connectionState === "fallback";
+  const isVoiceReady = liveSession.connectionState === "connected" || liveSession.connectionState === "connecting" || liveSession.connectionState === "reconnecting";
+  const employeeTurns = liveSession.transcript.filter((turn) => turn.role === "employee").length;
+  const guidance = getLiveVoiceGuidance({
+    connectionState: liveSession.connectionState,
+    voiceMode: liveSession.voiceMode,
+    assistantPhase: liveSession.assistantPhase,
+    isMuted: liveSession.isMuted,
+    transcriptTurns: liveSession.transcript.length,
+    employeeTurns,
+    recommendedTurns: scenario.recommended_turns || 4,
+    lastError: liveSession.lastError,
+  });
+
+  const handleManualReply = async () => {
+    const text = manualReply.trim();
+    if (!text) return;
+    try {
+      setIsSubmittingManual(true);
+      await liveSession.submitManualResponse(text);
+      setManualReply("");
+    } catch (error) {
+      console.error("[Live Voice] manual reply failed", error);
+      toast.error("Typed reply could not be sent.");
+    } finally {
+      setIsSubmittingManual(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
@@ -192,8 +238,13 @@ export default function LiveVoiceSession() {
             <div className="text-sm text-muted-foreground">{scenario.customer_persona?.communication_style} · {scenario.customer_persona?.initial_emotion}</div>
           </div>
           <div className="text-xs text-muted-foreground">{scenario.situation_summary}</div>
+          <div className="rounded-lg border border-border bg-background/60 px-3 py-3 text-left">
+            <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Conversation Goal</div>
+            <div className="text-sm font-medium mt-1">{scenarioGoal.title}</div>
+            <div className="text-xs text-muted-foreground mt-1">{scenarioGoal.description}</div>
+          </div>
           <div className="text-3xl font-mono font-bold tracking-tight">{liveSession.formattedDuration}</div>
-          {liveSession.connectionState !== "connected" && (
+          {!isVoiceReady && (
             <div className="text-sm text-muted-foreground">
               {liveSession.credentialPending || liveSession.connectionState === "connecting" || liveSession.connectionState === "requesting_credentials"
                 ? "Starting secure audio session..."
@@ -213,12 +264,27 @@ export default function LiveVoiceSession() {
               </Button>
             </div>
           )}
+          {liveSession.connectionState === "connected" && liveSession.lastError && (
+            <div className="text-sm text-teal">
+              {liveSession.lastError}
+            </div>
+          )}
+        </div>
+
+        <div className={`panel p-4 space-y-2 border ${guidanceToneClasses[guidance.tone]}`}>
+          <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground">What To Do Now</div>
+          <div className="text-sm font-semibold">{guidance.title}</div>
+          <div className="text-sm text-muted-foreground">{guidance.detail}</div>
+          <div className="text-xs text-muted-foreground">
+            Target: {Math.max(3, scenario.recommended_turns || 4)} employee turns. Current: {employeeTurns}
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div className="panel p-4">
             <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground mb-2">Call State</div>
             <div className="text-sm font-medium">{stateLabels[liveSession.connectionState]}</div>
+            <div className="text-xs text-muted-foreground mt-1 capitalize">{liveSession.voiceMode.replace("_", " ")} · {liveSession.assistantPhase.replace(/_/g, " ")}</div>
             <div className="text-xs text-muted-foreground mt-1">{liveSession.turnEvents.length} events · {liveSession.transcript.length} transcript turns</div>
           </div>
           <div className="panel p-4">
@@ -250,6 +316,12 @@ export default function LiveVoiceSession() {
 
         <div className="panel p-4 space-y-3">
           <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground">Live Transcript</div>
+          {liveSession.draftTranscript && (
+            <div className="rounded-lg border border-teal/20 bg-teal/5 p-3">
+              <div className="text-[10px] font-mono uppercase tracking-wider text-teal">Heard so far</div>
+              <div className="text-sm mt-1">{liveSession.draftTranscript}</div>
+            </div>
+          )}
           <div className="space-y-2 max-h-56 overflow-y-auto">
             {liveSession.transcript.length === 0 ? (
               <div className="text-sm text-muted-foreground">Transcript will appear here as audio transcription events arrive.</div>
@@ -263,6 +335,31 @@ export default function LiveVoiceSession() {
             )}
           </div>
         </div>
+
+        {liveSession.voiceMode === "browser_voice" && !isFallbackMode && (
+          <div className="panel p-4 space-y-3">
+            <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground">Manual Backup Reply</div>
+            <div className="text-sm text-muted-foreground">
+              If voice recognition misses your answer, type it here and send it into the same live scenario.
+            </div>
+            <Textarea
+              value={manualReply}
+              onChange={(event) => setManualReply(event.target.value)}
+              placeholder="Type the response you would say out loud..."
+              className="min-h-24"
+              disabled={isFinalizing || isSubmittingManual}
+            />
+            <Button
+              type="button"
+              className="w-full gap-2 bg-teal text-slate-deep hover:bg-teal/90"
+              onClick={() => void handleManualReply()}
+              disabled={isFinalizing || isSubmittingManual || manualReply.trim().length === 0}
+            >
+              {isSubmittingManual ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              {isSubmittingManual ? "Sending reply" : "Send typed reply"}
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="sticky bottom-0 bg-card/90 backdrop-blur border-t border-border px-4 py-4">
@@ -285,20 +382,30 @@ export default function LiveVoiceSession() {
             </Button>
           </div>
         ) : (
-          <div className="max-w-lg mx-auto flex items-center gap-3">
+          <div className="max-w-lg mx-auto grid grid-cols-3 gap-3">
             <Button
               type="button"
               variant="outline"
-              className="flex-1 h-14 rounded-xl gap-2"
+              className="h-14 rounded-xl gap-2"
               onClick={() => liveSession.toggleMute()}
-              disabled={isFinalizing || liveSession.connectionState === "fallback"}
+              disabled={isFinalizing || liveSession.connectionState === "requesting_permissions" || liveSession.connectionState === "requesting_credentials"}
             >
               {liveSession.isMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
-              {liveSession.isMuted ? "Unmute" : "Mute"}
+              {liveSession.isMuted ? "Resume Mic" : "Pause Mic"}
             </Button>
             <Button
               type="button"
-              className="flex-1 h-14 rounded-xl bg-red-500 text-white hover:bg-red-500/90 gap-2"
+              variant="outline"
+              className="h-14 rounded-xl gap-2"
+              onClick={() => void liveSession.repeatLastCustomerMessage()}
+              disabled={isFinalizing || liveSession.transcript.filter((turn) => turn.role === "customer").length === 0}
+            >
+              <RotateCcw className="h-5 w-5" />
+              Repeat
+            </Button>
+            <Button
+              type="button"
+              className="h-14 rounded-xl bg-red-500 text-white hover:bg-red-500/90 gap-2"
               onClick={() => void handleEndCall()}
               disabled={isFinalizing}
             >

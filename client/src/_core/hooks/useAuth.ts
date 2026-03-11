@@ -1,7 +1,8 @@
 import { getLoginUrl } from "@/const";
+import { supabase } from "@/lib/supabase";
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
@@ -12,8 +13,34 @@ export function useAuth(options?: UseAuthOptions) {
   const { redirectOnUnauthenticated = false, redirectPath } = options ?? {};
   const utils = trpc.useUtils();
   const resolvedRedirectPath = redirectPath ?? getLoginUrl();
+  const [sessionReady, setSessionReady] = useState(false);
+  const [hasSession, setHasSession] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setHasSession(Boolean(data.session));
+      setSessionReady(true);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setHasSession(Boolean(session));
+      setSessionReady(true);
+      void utils.auth.me.invalidate();
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [utils.auth.me]);
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
+    enabled: sessionReady && hasSession,
     retry: false,
     refetchOnWindowFocus: false,
   });
@@ -26,6 +53,7 @@ export function useAuth(options?: UseAuthOptions) {
 
   const logout = useCallback(async () => {
     try {
+      await supabase.auth.signOut();
       await logoutMutation.mutateAsync();
     } catch (error: unknown) {
       if (
@@ -41,28 +69,36 @@ export function useAuth(options?: UseAuthOptions) {
     }
   }, [logoutMutation, utils]);
 
+  const authState = meQuery.data;
+  const effectiveUser = authState?.user ?? null;
+  const actorUser = authState?.actorUser ?? null;
+  const impersonation = authState?.impersonation ?? null;
+
   const state = useMemo(() => {
-    localStorage.setItem(
-      "manus-runtime-user-info",
-      JSON.stringify(meQuery.data)
-    );
+    localStorage.setItem("manus-runtime-user-info", JSON.stringify(effectiveUser ?? null));
     return {
-      user: meQuery.data ?? null,
-      loading: meQuery.isLoading || logoutMutation.isPending,
+      user: hasSession ? effectiveUser : null,
+      actorUser: hasSession ? actorUser : null,
+      impersonation: hasSession ? impersonation : null,
+      loading: !sessionReady || (hasSession && meQuery.isLoading) || logoutMutation.isPending,
       error: meQuery.error ?? logoutMutation.error ?? null,
-      isAuthenticated: Boolean(meQuery.data),
+      isAuthenticated: hasSession && Boolean(effectiveUser),
     };
   }, [
-    meQuery.data,
+    actorUser,
+    effectiveUser,
+    hasSession,
     meQuery.error,
     meQuery.isLoading,
+    impersonation,
     logoutMutation.error,
     logoutMutation.isPending,
+    sessionReady,
   ]);
 
   useEffect(() => {
     if (!redirectOnUnauthenticated) return;
-    if (meQuery.isLoading || logoutMutation.isPending) return;
+    if (!sessionReady || meQuery.isLoading || logoutMutation.isPending) return;
     if (state.user) return;
     if (typeof window === "undefined") return;
     if (!resolvedRedirectPath) return;
@@ -74,6 +110,7 @@ export function useAuth(options?: UseAuthOptions) {
     resolvedRedirectPath,
     logoutMutation.isPending,
     meQuery.isLoading,
+    sessionReady,
     state.user,
   ]);
 

@@ -1,9 +1,10 @@
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
+import { IMPERSONATION_COOKIE_NAME } from "./_core/sdk";
 import { publicProcedure, protectedProcedure, adminProcedure, router } from "./_core/trpc";
 import { z } from "zod";
-import { getDb } from "./db";
+import { getDb, getUserById } from "./db";
 import {
   users,
   employeeProfiles,
@@ -43,6 +44,10 @@ import { createLiveVoiceSessionCredentials } from "./services/live-voice";
 import { normalizeDepartment } from "./services/normalizers";
 import { createManagerReview } from "./services/reviews";
 import { saveSimulationSession } from "./services/session-persistence";
+import { getSupabaseAdmin } from "./_core/supabase";
+import { ENV } from "./_core/env";
+import { createSignedStorageUrl } from "./storage";
+import { WSC_SCENARIO_TEMPLATE_SEEDS } from "./wsc-seed-data";
 
 // ─── Manager Procedure (manager, admin, super_admin) ───
 const managerProcedure = protectedProcedure.use(async ({ ctx, next }) => {
@@ -69,17 +74,152 @@ function clampRecommendedTurns(value?: number) {
   return Math.max(3, Math.min(5, value ?? 4));
 }
 
+function buildScenarioFromTemplate(t: typeof scenarioTemplates.$inferSelect) {
+  return {
+    scenario_id: `tmpl-${t.id}`,
+    department: t.department,
+    employee_role: t.targetRole,
+    difficulty: t.difficulty,
+    scenario_family: t.scenarioFamily,
+    customer_persona: t.customerPersona,
+    situation_summary: t.situationSummary,
+    opening_line: t.openingLine,
+    hidden_facts: t.hiddenFacts || [],
+    approved_resolution_paths: t.approvedResolutionPaths || [],
+    required_behaviors: t.requiredBehaviors || [],
+    critical_errors: t.criticalErrors || [],
+    branch_logic: t.branchLogic || {},
+    emotion_progression: t.emotionProgression || { starting_state: "frustrated", better_if: [], worse_if: [] },
+    completion_rules: t.completionRules || { resolved_if: [], end_early_if: [], manager_required_if: [] },
+    recommended_turns: clampRecommendedTurns(t.recommendedTurns),
+  };
+}
+
+function buildScenarioFromSeed(input: {
+  department: typeof DEPARTMENTS[number];
+  scenarioFamily?: string;
+  difficulty: number;
+  employeeRole: string;
+}) {
+  const candidates = WSC_SCENARIO_TEMPLATE_SEEDS
+    .filter((seed) => seed.department === input.department)
+    .filter((seed) => !input.scenarioFamily || seed.scenarioFamily === input.scenarioFamily)
+    .sort((a, b) => {
+      const difficultyDelta = Math.abs(a.difficulty - input.difficulty) - Math.abs(b.difficulty - input.difficulty);
+      if (difficultyDelta !== 0) return difficultyDelta;
+      return a.title.localeCompare(b.title);
+    });
+
+  const selected = candidates[0]
+    ?? WSC_SCENARIO_TEMPLATE_SEEDS.find((seed) => seed.department === input.department)
+    ?? WSC_SCENARIO_TEMPLATE_SEEDS[0];
+
+  return {
+    scenario_id: `seed-${selected.scenarioFamily}-${selected.difficulty}`,
+    department: selected.department,
+    employee_role: input.employeeRole || selected.targetRole,
+    difficulty: selected.difficulty,
+    scenario_family: selected.scenarioFamily,
+    customer_persona: selected.customerPersona,
+    situation_summary: selected.situationSummary,
+    opening_line: selected.openingLine,
+    hidden_facts: selected.hiddenFacts || [],
+    approved_resolution_paths: selected.approvedResolutionPaths || [],
+    required_behaviors: selected.requiredBehaviors || [],
+    critical_errors: selected.criticalErrors || [],
+    branch_logic: selected.branchLogic || {},
+    emotion_progression: selected.emotionProgression || { starting_state: "frustrated", better_if: [], worse_if: [] },
+    completion_rules: selected.completionRules || { resolved_if: [], end_early_if: [], manager_required_if: [] },
+    recommended_turns: clampRecommendedTurns(selected.recommendedTurns),
+  };
+}
+
 // ─── Router ───
 
 export const appRouter = router({
   system: systemRouter,
   auth: router({
-    me: publicProcedure.query(opts => opts.ctx.user),
+    me: publicProcedure.query(({ ctx }) => {
+      if (!ctx.user) return null;
+
+      return {
+        user: ctx.user,
+        actorUser: ctx.actorUser ?? ctx.user,
+        impersonation: ctx.impersonation
+          ? {
+            active: true,
+            targetUserId: ctx.impersonation.targetUserId,
+            targetUserName: ctx.user.name ?? ctx.user.email ?? `User ${ctx.user.id}`,
+            actorUserId: (ctx.actorUser ?? ctx.user).id,
+            actorUserName: (ctx.actorUser ?? ctx.user).name ?? (ctx.actorUser ?? ctx.user).email ?? `User ${(ctx.actorUser ?? ctx.user).id}`,
+          }
+          : null,
+      } as const;
+    }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      ctx.res.clearCookie(IMPERSONATION_COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       return { success: true } as const;
     }),
+    startImpersonation: protectedProcedure
+      .input(z.object({ targetUserId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const actorUser = ctx.actorUser ?? ctx.user;
+        if (!actorUser || !["admin", "super_admin"].includes(actorUser.role)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
+        }
+
+        const targetUser = await getUserById(input.targetUserId);
+        if (!targetUser) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Target user not found" });
+        }
+        if (!targetUser.isActive) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Target user is inactive" });
+        }
+        if (!["employee", "shift_lead"].includes(targetUser.role)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Only employee accounts can be used for employee-view testing" });
+        }
+
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(IMPERSONATION_COOKIE_NAME, String(targetUser.id), {
+          ...cookieOptions,
+          maxAge: 1000 * 60 * 60 * 8,
+        });
+        await logAudit(actorUser.id, "role_change", "user", targetUser.id, {
+          impersonation: "start",
+          actorUserId: actorUser.id,
+          actorRole: actorUser.role,
+        });
+
+        return {
+          success: true,
+          targetUser: {
+            id: targetUser.id,
+            name: targetUser.name,
+            email: targetUser.email,
+            role: targetUser.role,
+          },
+        } as const;
+      }),
+    stopImpersonation: protectedProcedure
+      .mutation(async ({ ctx }) => {
+        const actorUser = ctx.actorUser ?? ctx.user;
+        if (!actorUser || !["admin", "super_admin"].includes(actorUser.role)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
+        }
+
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.clearCookie(IMPERSONATION_COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+        if (ctx.impersonation?.targetUserId) {
+          await logAudit(actorUser.id, "role_change", "user", ctx.impersonation.targetUserId, {
+            impersonation: "stop",
+            actorUserId: actorUser.id,
+            actorRole: actorUser.role,
+          });
+        }
+        return { success: true } as const;
+      }),
   }),
 
   // ─── Employee Profile ───
@@ -126,38 +266,67 @@ export const appRouter = router({
         employeeLevelEstimate: z.string().optional(),
       }))
       .mutation(async ({ input }) => {
+        let db = null;
+        try {
+          db = await getDb();
+        } catch (error) {
+          console.error("[Scenario Generation] Database unavailable, falling back to bundled catalog:", error);
+        }
+
         // If a template is specified, load it
-        if (input.scenarioTemplateId) {
-          const db = await getDb();
-          if (db) {
-            const rows = await db.select().from(scenarioTemplates).where(eq(scenarioTemplates.id, input.scenarioTemplateId)).limit(1);
-            if (rows[0]) {
-              const t = rows[0];
-              return {
-                scenario: {
-                  scenario_id: `tmpl-${t.id}`,
-                  department: t.department,
-                  employee_role: t.targetRole,
-                  difficulty: t.difficulty,
-                  scenario_family: t.scenarioFamily,
-                  customer_persona: t.customerPersona,
-                  situation_summary: t.situationSummary,
-                  opening_line: t.openingLine,
-                  hidden_facts: t.hiddenFacts || [],
-                  approved_resolution_paths: t.approvedResolutionPaths || [],
-                  required_behaviors: t.requiredBehaviors || [],
-                  critical_errors: t.criticalErrors || [],
-                  branch_logic: t.branchLogic || {},
-                  emotion_progression: t.emotionProgression || { starting_state: "frustrated", better_if: [], worse_if: [] },
-                  completion_rules: t.completionRules || { resolved_if: [], end_early_if: [], manager_required_if: [] },
-                  recommended_turns: clampRecommendedTurns(t.recommendedTurns),
-                },
-              };
-            }
+        if (input.scenarioTemplateId && db) {
+          const rows = await db.select().from(scenarioTemplates).where(eq(scenarioTemplates.id, input.scenarioTemplateId)).limit(1);
+          if (rows[0]) {
+            return { scenario: buildScenarioFromTemplate(rows[0]) };
           }
         }
-        const scenario = await generateScenario(input);
-        return { scenario };
+
+        if (!ENV.forgeApiKey) {
+          if (db) {
+            const filters = [eq(scenarioTemplates.department, input.department), eq(scenarioTemplates.isActive, true)];
+            if (input.scenarioFamily) {
+              filters.push(eq(scenarioTemplates.scenarioFamily, input.scenarioFamily));
+            }
+
+            const candidates = await db.select()
+              .from(scenarioTemplates)
+              .where(and(...filters));
+
+            if (candidates.length > 0) {
+              const selected = candidates.sort((a, b) => {
+                const difficultyDelta = Math.abs(a.difficulty - input.difficulty) - Math.abs(b.difficulty - input.difficulty);
+                if (difficultyDelta !== 0) return difficultyDelta;
+                return a.id - b.id;
+              })[0];
+
+              return { scenario: buildScenarioFromTemplate(selected) };
+            }
+          }
+
+          return {
+            scenario: buildScenarioFromSeed({
+              department: input.department,
+              scenarioFamily: input.scenarioFamily,
+              difficulty: input.difficulty,
+              employeeRole: input.employeeRole,
+            }),
+          };
+        }
+
+        try {
+          const scenario = await generateScenario(input);
+          return { scenario };
+        } catch (error) {
+          console.error("[Scenario Generation] AI generation failed, falling back to bundled catalog:", error);
+          return {
+            scenario: buildScenarioFromSeed({
+              department: input.department,
+              scenarioFamily: input.scenarioFamily,
+              difficulty: input.difficulty,
+              employeeRole: input.employeeRole,
+            }),
+          };
+        }
       }),
 
     customerReply: protectedProcedure
@@ -343,10 +512,11 @@ export const appRouter = router({
           await assertManagerCanAccessEmployee(ctx.user, session.userId);
         }
 
-        return await db.select({
+        const mediaItems = await db.select({
           id: sessionMedia.id,
           mediaType: sessionMedia.mediaType,
           storageUrl: sessionMedia.storageUrl,
+          storageKey: sessionMedia.storageKey,
           mimeType: sessionMedia.mimeType,
           durationSeconds: sessionMedia.durationSeconds,
           turnNumber: sessionMedia.turnNumber,
@@ -355,6 +525,13 @@ export const appRouter = router({
           .from(sessionMedia)
           .where(eq(sessionMedia.sessionId, input.sessionId))
           .orderBy(asc(sessionMedia.turnNumber), asc(sessionMedia.createdAt));
+
+        return await Promise.all(mediaItems.map(async (item) => ({
+          ...item,
+          storageUrl: item.storageKey
+            ? await createSignedStorageUrl(item.storageKey, { fallbackBucket: "session-media" }).catch(() => item.storageUrl)
+            : item.storageUrl,
+        })));
       }),
 
     // Manager: list team sessions with filters
@@ -953,9 +1130,9 @@ export const appRouter = router({
       }),
     createUser: adminProcedure
       .input(z.object({
-        openId: z.string().min(1),
-        name: z.string().min(1).optional(),
-        email: z.string().email().optional(),
+        name: z.string().min(1),
+        email: z.string().email(),
+        password: z.string().min(8),
         role: userRoleEnum.default("employee"),
         department: departmentEnum.optional().nullable(),
         managerId: z.number().optional().nullable(),
@@ -966,18 +1143,37 @@ export const appRouter = router({
         if (!db) return { success: false, userId: null };
 
         try {
+          const existingUsers = await getSupabaseAdmin().auth.admin.listUsers();
+          const existingAuthUser = existingUsers.data?.users.find((user) => user.email?.toLowerCase() === input.email.toLowerCase());
+
+          const authUser = existingAuthUser
+            ? existingAuthUser
+            : (await getSupabaseAdmin().auth.admin.createUser({
+              email: input.email,
+              password: input.password,
+              email_confirm: true,
+              user_metadata: {
+                name: input.name,
+                full_name: input.name,
+              },
+            })).data.user;
+
+          if (!authUser) {
+            throw new Error("Failed to create Supabase auth user");
+          }
+
           const result = await db.insert(users).values({
-            openId: input.openId,
-            name: input.name ?? null,
-            email: input.email ?? null,
+            openId: authUser.id,
+            name: input.name,
+            email: input.email,
             role: input.role,
             department: input.department ?? null,
             managerId: input.managerId ?? null,
             isActive: input.isActive,
-            loginMethod: "manual_admin",
+            loginMethod: "supabase_email",
             lastSignedIn: new Date(),
-          } as any);
-          const userId = result[0]?.insertId ?? null;
+          } as any).returning({ id: users.id });
+          const userId = result[0]?.id ?? null;
           await logAudit(ctx.user.id, "role_change", "user", userId, {
             created: true,
             role: input.role,
@@ -989,7 +1185,7 @@ export const appRouter = router({
         } catch (error) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "A user with that OpenID already exists",
+            message: "A user with that email already exists",
             cause: error,
           });
         }
@@ -997,6 +1193,7 @@ export const appRouter = router({
     updateUser: adminProcedure
       .input(z.object({
         userId: z.number(),
+        email: z.string().email().optional(),
         role: userRoleEnum.optional(),
         department: departmentEnum.optional().nullable(),
         managerId: z.number().optional().nullable(),
@@ -1005,12 +1202,26 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) return { success: false };
+        const userRows = await db.select().from(users).where(eq(users.id, input.userId)).limit(1);
+        const existingUser = userRows[0];
+        if (!existingUser) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+        }
         const updates: Record<string, any> = {};
+        if (input.email !== undefined) updates.email = input.email;
         if (input.role !== undefined) updates.role = input.role;
         if (input.department !== undefined) updates.department = input.department;
         if (input.managerId !== undefined) updates.managerId = input.managerId;
         if (input.isActive !== undefined) updates.isActive = input.isActive;
         if (Object.keys(updates).length === 0) return { success: false };
+
+        const authUpdates: Record<string, unknown> = {};
+        if (input.email !== undefined) authUpdates.email = input.email;
+        if (input.isActive !== undefined) authUpdates.ban_duration = input.isActive ? "none" : "876000h";
+        if (Object.keys(authUpdates).length > 0) {
+          await getSupabaseAdmin().auth.admin.updateUserById(existingUser.openId, authUpdates);
+        }
+
         await db.update(users).set(updates).where(eq(users.id, input.userId));
         await logAudit(ctx.user.id, "role_change", "user", input.userId, updates);
         return { success: true };

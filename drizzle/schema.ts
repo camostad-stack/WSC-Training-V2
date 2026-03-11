@@ -1,19 +1,19 @@
 import { sql } from "drizzle-orm";
 import {
-  AnyMySqlColumn,
+  AnyPgColumn,
   boolean,
   check,
   index,
-  int,
-  json,
-  mysqlEnum,
-  mysqlTable,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  serial,
   text,
   timestamp,
   varchar,
-} from "drizzle-orm/mysql-core";
+} from "drizzle-orm/pg-core";
 
-// Reusable enum values shared by schema and API validation.
 export const USER_ROLES = ["employee", "shift_lead", "manager", "admin", "super_admin"] as const;
 export const READINESS_STATUSES = ["not_ready", "practice_more", "shadow_ready", "partially_independent", "independent"] as const;
 export const SESSION_MODES = ["in_person", "phone", "async_video", "live_voice"] as const;
@@ -34,19 +34,35 @@ export const AUDIT_ACTIONS = [
   "manager_review", "role_change", "profile_update",
 ] as const;
 
-export const users = mysqlTable("users", {
-  id: int("id").autoincrement().primaryKey(),
+export const userRoleEnum = pgEnum("user_role", USER_ROLES);
+export const readinessStatusEnum = pgEnum("readiness_status", READINESS_STATUSES);
+export const sessionModeEnum = pgEnum("session_mode", SESSION_MODES);
+export const sessionStatusEnum = pgEnum("session_status", SESSION_STATUSES);
+export const reviewStatusEnum = pgEnum("review_status", REVIEW_STATUSES);
+export const emotionalIntensityEnum = pgEnum("emotional_intensity", EMOTIONAL_INTENSITIES);
+export const scenarioComplexityEnum = pgEnum("scenario_complexity", SCENARIO_COMPLEXITIES);
+export const departmentEnum = pgEnum("department", DEPARTMENTS);
+export const passFailEnum = pgEnum("pass_fail", PASS_FAIL);
+export const trendEnum = pgEnum("trend", TRENDS);
+export const performanceSignalEnum = pgEnum("performance_signal", PERFORMANCE_SIGNALS);
+export const sessionQualityEnum = pgEnum("session_quality", SESSION_QUALITY_VALUES);
+export const assignmentStatusEnum = pgEnum("assignment_status", ASSIGNMENT_STATUSES);
+export const sessionMediaTypeEnum = pgEnum("session_media_type", SESSION_MEDIA_TYPES);
+export const auditActionEnum = pgEnum("audit_action", AUDIT_ACTIONS);
+
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", USER_ROLES).default("employee").notNull(),
-  department: mysqlEnum("department", DEPARTMENTS),
-  managerId: int("managerId").references((): AnyMySqlColumn => users.id, { onDelete: "set null" }),
+  role: userRoleEnum("role").default("employee").notNull(),
+  department: departmentEnum("department"),
+  managerId: integer("managerId").references((): AnyPgColumn => users.id, { onDelete: "set null" }),
   isActive: boolean("isActive").default(true).notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-  lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
+  lastSignedIn: timestamp("lastSignedIn", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("users_role_idx").on(table.role),
   index("users_department_idx").on(table.department),
@@ -58,13 +74,13 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
-export const employeeProfiles = mysqlTable("employee_profiles", {
-  id: int("id").autoincrement().primaryKey(),
-  userId: int("userId").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
+export const employeeProfiles = pgTable("employee_profiles", {
+  id: serial("id").primaryKey(),
+  userId: integer("userId").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
   levelEstimate: varchar("levelEstimate", { length: 32 }),
-  readinessStatus: mysqlEnum("readinessStatus", READINESS_STATUSES).default("not_ready").notNull(),
-  trend: mysqlEnum("trend", TRENDS).default("flat"),
-  skillMap: json("skillMap").$type<{
+  readinessStatus: readinessStatusEnum("readinessStatus").default("not_ready").notNull(),
+  trend: trendEnum("trend").default("flat"),
+  skillMap: jsonb("skillMap").$type<{
     empathy: number;
     clarity: number;
     policy_accuracy: number;
@@ -73,16 +89,16 @@ export const employeeProfiles = mysqlTable("employee_profiles", {
     escalation_judgment: number;
     professional_presence: number;
   }>(),
-  strongestFamilies: json("strongestFamilies").$type<string[]>(),
-  weakestFamilies: json("weakestFamilies").$type<string[]>(),
+  strongestFamilies: jsonb("strongestFamilies").$type<string[]>(),
+  weakestFamilies: jsonb("weakestFamilies").$type<string[]>(),
   pressureHandling: varchar("pressureHandling", { length: 64 }),
-  consistencyScore: int("consistencyScore"),
-  totalSessions: int("totalSessions").default(0).notNull(),
-  averageScore: int("averageScore"),
+  consistencyScore: integer("consistencyScore"),
+  totalSessions: integer("totalSessions").default(0).notNull(),
+  averageScore: integer("averageScore"),
   managerAttentionFlag: boolean("managerAttentionFlag").default(false).notNull(),
   managerNotes: text("managerNotes"),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
 }, (table) => [
   index("employee_profiles_readiness_idx").on(table.readinessStatus),
   index("employee_profiles_attention_idx").on(table.managerAttentionFlag),
@@ -94,16 +110,16 @@ export const employeeProfiles = mysqlTable("employee_profiles", {
 export type EmployeeProfile = typeof employeeProfiles.$inferSelect;
 export type InsertEmployeeProfile = typeof employeeProfiles.$inferInsert;
 
-export const scenarioTemplates = mysqlTable("scenario_templates", {
-  id: int("id").autoincrement().primaryKey(),
+export const scenarioTemplates = pgTable("scenario_templates", {
+  id: serial("id").primaryKey(),
   title: varchar("title", { length: 256 }).notNull(),
-  department: mysqlEnum("department", DEPARTMENTS).notNull(),
+  department: departmentEnum("department").notNull(),
   scenarioFamily: varchar("scenarioFamily", { length: 128 }).notNull(),
   targetRole: varchar("targetRole", { length: 128 }).notNull(),
-  difficulty: int("difficulty").notNull(),
-  emotionalIntensity: mysqlEnum("emotionalIntensity", EMOTIONAL_INTENSITIES).default("moderate").notNull(),
-  complexity: mysqlEnum("complexity", SCENARIO_COMPLEXITIES).default("mixed").notNull(),
-  customerPersona: json("customerPersona").$type<{
+  difficulty: integer("difficulty").notNull(),
+  emotionalIntensity: emotionalIntensityEnum("emotionalIntensity").default("moderate").notNull(),
+  complexity: scenarioComplexityEnum("complexity").default("mixed").notNull(),
+  customerPersona: jsonb("customerPersona").$type<{
     name: string;
     age_band: string;
     membership_context: string;
@@ -113,18 +129,18 @@ export const scenarioTemplates = mysqlTable("scenario_templates", {
   }>().notNull(),
   situationSummary: text("situationSummary").notNull(),
   openingLine: text("openingLine").notNull(),
-  hiddenFacts: json("hiddenFacts").$type<string[]>(),
-  approvedResolutionPaths: json("approvedResolutionPaths").$type<string[]>(),
-  requiredBehaviors: json("requiredBehaviors").$type<string[]>(),
-  criticalErrors: json("criticalErrors").$type<string[]>(),
-  branchLogic: json("branchLogic"),
-  emotionProgression: json("emotionProgression"),
-  completionRules: json("completionRules"),
-  recommendedTurns: int("recommendedTurns").default(4).notNull(),
+  hiddenFacts: jsonb("hiddenFacts").$type<string[]>(),
+  approvedResolutionPaths: jsonb("approvedResolutionPaths").$type<string[]>(),
+  requiredBehaviors: jsonb("requiredBehaviors").$type<string[]>(),
+  criticalErrors: jsonb("criticalErrors").$type<string[]>(),
+  branchLogic: jsonb("branchLogic"),
+  emotionProgression: jsonb("emotionProgression"),
+  completionRules: jsonb("completionRules"),
+  recommendedTurns: integer("recommendedTurns").default(4).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
-  createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  createdBy: integer("createdBy").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
 }, (table) => [
   index("scenario_templates_lookup_idx").on(table.department, table.scenarioFamily, table.isActive),
   index("scenario_templates_difficulty_idx").on(table.difficulty),
@@ -135,24 +151,24 @@ export const scenarioTemplates = mysqlTable("scenario_templates", {
 export type ScenarioTemplate = typeof scenarioTemplates.$inferSelect;
 export type InsertScenarioTemplate = typeof scenarioTemplates.$inferInsert;
 
-export const assignments = mysqlTable("assignments", {
-  id: int("id").autoincrement().primaryKey(),
-  employeeId: int("employeeId").notNull().references(() => users.id, { onDelete: "cascade" }),
-  assignedBy: int("assignedBy").notNull().references(() => users.id),
-  scenarioTemplateId: int("scenarioTemplateId").references(() => scenarioTemplates.id, { onDelete: "set null" }),
+export const assignments = pgTable("assignments", {
+  id: serial("id").primaryKey(),
+  employeeId: integer("employeeId").notNull().references(() => users.id, { onDelete: "cascade" }),
+  assignedBy: integer("assignedBy").notNull().references(() => users.id),
+  scenarioTemplateId: integer("scenarioTemplateId").references(() => scenarioTemplates.id, { onDelete: "set null" }),
   scenarioFamily: varchar("scenarioFamily", { length: 128 }),
-  department: mysqlEnum("department", DEPARTMENTS),
-  difficultyMin: int("difficultyMin").default(1).notNull(),
-  difficultyMax: int("difficultyMax").default(5).notNull(),
-  requiredAttempts: int("requiredAttempts").default(1).notNull(),
-  completedAttempts: int("completedAttempts").default(0).notNull(),
-  status: mysqlEnum("status", ASSIGNMENT_STATUSES).default("assigned").notNull(),
+  department: departmentEnum("department"),
+  difficultyMin: integer("difficultyMin").default(1).notNull(),
+  difficultyMax: integer("difficultyMax").default(5).notNull(),
+  requiredAttempts: integer("requiredAttempts").default(1).notNull(),
+  completedAttempts: integer("completedAttempts").default(0).notNull(),
+  status: assignmentStatusEnum("status").default("assigned").notNull(),
   title: varchar("title", { length: 256 }).notNull(),
   notes: text("notes"),
-  dueDate: timestamp("dueDate"),
-  completedAt: timestamp("completedAt"),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  dueDate: timestamp("dueDate", { withTimezone: true }),
+  completedAt: timestamp("completedAt", { withTimezone: true }),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
 }, (table) => [
   index("assignments_employee_status_idx").on(table.employeeId, table.status),
   index("assignments_assigned_by_idx").on(table.assignedBy),
@@ -168,37 +184,37 @@ export const assignments = mysqlTable("assignments", {
 export type Assignment = typeof assignments.$inferSelect;
 export type InsertAssignment = typeof assignments.$inferInsert;
 
-export const simulationSessions = mysqlTable("simulation_sessions", {
-  id: int("id").autoincrement().primaryKey(),
-  userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
-  scenarioTemplateId: int("scenarioTemplateId").references(() => scenarioTemplates.id, { onDelete: "set null" }),
-  assignmentId: int("assignmentId").references(() => assignments.id, { onDelete: "set null" }),
+export const simulationSessions = pgTable("simulation_sessions", {
+  id: serial("id").primaryKey(),
+  userId: integer("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+  scenarioTemplateId: integer("scenarioTemplateId").references(() => scenarioTemplates.id, { onDelete: "set null" }),
+  assignmentId: integer("assignmentId").references(() => assignments.id, { onDelete: "set null" }),
   scenarioId: varchar("scenarioId", { length: 64 }).notNull(),
-  department: mysqlEnum("department", DEPARTMENTS),
+  department: departmentEnum("department"),
   scenarioFamily: varchar("scenarioFamily", { length: 128 }),
   employeeRole: varchar("employeeRole", { length: 128 }).notNull(),
-  difficulty: int("difficulty").notNull(),
-  mode: mysqlEnum("mode", SESSION_MODES).default("in_person").notNull(),
-  status: mysqlEnum("status", SESSION_STATUSES).default("pending").notNull(),
-  scenarioJson: json("scenarioJson").notNull(),
-  transcript: json("transcript").$type<Array<{
+  difficulty: integer("difficulty").notNull(),
+  mode: sessionModeEnum("mode").default("in_person").notNull(),
+  status: sessionStatusEnum("status").default("pending").notNull(),
+  scenarioJson: jsonb("scenarioJson").notNull(),
+  transcript: jsonb("transcript").$type<Array<{
     role: "customer" | "employee";
     message: string;
     emotion?: string;
     timestamp?: number;
   }>>(),
-  turnEvents: json("turnEvents").$type<Array<{
+  turnEvents: jsonb("turnEvents").$type<Array<{
     type: string;
     source: "system" | "employee" | "customer";
     atMs: number;
     payload?: Record<string, unknown>;
   }>>(),
-  timingMarkers: json("timingMarkers").$type<Array<{
+  timingMarkers: jsonb("timingMarkers").$type<Array<{
     name: string;
     atMs: number;
     detail?: string;
   }>>(),
-  stateHistory: json("stateHistory").$type<Array<{
+  stateHistory: jsonb("stateHistory").$type<Array<{
     turn_number: number;
     emotion_state: string;
     trust_level: number;
@@ -207,18 +223,18 @@ export const simulationSessions = mysqlTable("simulation_sessions", {
     escalation_required: boolean;
     scenario_risk_level: string;
   }>>(),
-  turnCount: int("turnCount").default(0).notNull(),
-  policyGrounding: json("policyGrounding"),
-  visibleBehavior: json("visibleBehavior"),
-  evaluationResult: json("evaluationResult"),
-  coachingResult: json("coachingResult"),
-  managerDebrief: json("managerDebrief"),
-  sessionQuality: mysqlEnum("sessionQuality", SESSION_QUALITY_VALUES),
-  lowEffortResult: json("lowEffortResult"),
-  overallScore: int("overallScore"),
-  passFail: mysqlEnum("passFail", PASS_FAIL),
-  readinessSignal: mysqlEnum("readinessSignal", READINESS_STATUSES),
-  categoryScores: json("categoryScores").$type<{
+  turnCount: integer("turnCount").default(0).notNull(),
+  policyGrounding: jsonb("policyGrounding"),
+  visibleBehavior: jsonb("visibleBehavior"),
+  evaluationResult: jsonb("evaluationResult"),
+  coachingResult: jsonb("coachingResult"),
+  managerDebrief: jsonb("managerDebrief"),
+  sessionQuality: sessionQualityEnum("sessionQuality"),
+  lowEffortResult: jsonb("lowEffortResult"),
+  overallScore: integer("overallScore"),
+  passFail: passFailEnum("passFail"),
+  readinessSignal: readinessStatusEnum("readinessSignal"),
+  categoryScores: jsonb("categoryScores").$type<{
     opening_warmth: number;
     listening_empathy: number;
     clarity_directness: number;
@@ -230,12 +246,12 @@ export const simulationSessions = mysqlTable("simulation_sessions", {
     visible_professionalism: number;
     closing_control: number;
   }>(),
-  reviewStatus: mysqlEnum("reviewStatus", REVIEW_STATUSES).default("pending").notNull(),
+  reviewStatus: reviewStatusEnum("reviewStatus").default("pending").notNull(),
   isFlagged: boolean("isFlagged").default(false).notNull(),
   flagReason: text("flagReason"),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  completedAt: timestamp("completedAt"),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp("completedAt", { withTimezone: true }),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
 }, (table) => [
   index("simulation_sessions_user_created_idx").on(table.userId, table.createdAt),
   index("simulation_sessions_scenario_id_idx").on(table.scenarioId),
@@ -252,18 +268,18 @@ export const simulationSessions = mysqlTable("simulation_sessions", {
 export type SimulationSession = typeof simulationSessions.$inferSelect;
 export type InsertSimulationSession = typeof simulationSessions.$inferInsert;
 
-export const sessionMedia = mysqlTable("session_media", {
-  id: int("id").autoincrement().primaryKey(),
-  sessionId: int("sessionId").notNull().references(() => simulationSessions.id, { onDelete: "cascade" }),
-  userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
-  mediaType: mysqlEnum("mediaType", SESSION_MEDIA_TYPES).notNull(),
+export const sessionMedia = pgTable("session_media", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("sessionId").notNull().references(() => simulationSessions.id, { onDelete: "cascade" }),
+  userId: integer("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+  mediaType: sessionMediaTypeEnum("mediaType").notNull(),
   storageUrl: varchar("storageUrl", { length: 1024 }).notNull(),
   storageKey: varchar("storageKey", { length: 512 }).notNull(),
   mimeType: varchar("mimeType", { length: 128 }),
-  fileSizeBytes: int("fileSizeBytes"),
-  durationSeconds: int("durationSeconds"),
-  turnNumber: int("turnNumber"),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  fileSizeBytes: integer("fileSizeBytes"),
+  durationSeconds: integer("durationSeconds"),
+  turnNumber: integer("turnNumber"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("session_media_session_idx").on(table.sessionId, table.createdAt),
   index("session_media_user_idx").on(table.userId),
@@ -275,25 +291,25 @@ export const sessionMedia = mysqlTable("session_media", {
 export type SessionMedia = typeof sessionMedia.$inferSelect;
 export type InsertSessionMedia = typeof sessionMedia.$inferInsert;
 
-export const managerReviews = mysqlTable("manager_reviews", {
-  id: int("id").autoincrement().primaryKey(),
-  sessionId: int("sessionId").notNull().references(() => simulationSessions.id, { onDelete: "cascade" }),
-  reviewerId: int("reviewerId").notNull().references(() => users.id),
-  employeeId: int("employeeId").notNull().references(() => users.id, { onDelete: "cascade" }),
-  originalScore: int("originalScore"),
-  overrideScore: int("overrideScore"),
-  scoreDelta: int("scoreDelta"),
+export const managerReviews = pgTable("manager_reviews", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("sessionId").notNull().references(() => simulationSessions.id, { onDelete: "cascade" }),
+  reviewerId: integer("reviewerId").notNull().references(() => users.id),
+  employeeId: integer("employeeId").notNull().references(() => users.id, { onDelete: "cascade" }),
+  originalScore: integer("originalScore"),
+  overrideScore: integer("overrideScore"),
+  scoreDelta: integer("scoreDelta"),
   overrideReason: text("overrideReason"),
   managerNotes: text("managerNotes"),
-  performanceSignal: mysqlEnum("performanceSignal", PERFORMANCE_SIGNALS),
+  performanceSignal: performanceSignalEnum("performanceSignal"),
   followUpRequired: boolean("followUpRequired").default(false).notNull(),
   followUpAction: text("followUpAction"),
   shadowingNeeded: boolean("shadowingNeeded").default(false).notNull(),
-  assignedNextDrillTemplateId: int("assignedNextDrillTemplateId").references(() => scenarioTemplates.id, { onDelete: "set null" }),
+  assignedNextDrillTemplateId: integer("assignedNextDrillTemplateId").references(() => scenarioTemplates.id, { onDelete: "set null" }),
   assignedNextDrill: varchar("assignedNextDrill", { length: 256 }),
-  status: mysqlEnum("status", REVIEW_STATUSES).default("reviewed").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  status: reviewStatusEnum("status").default("reviewed").notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
 }, (table) => [
   index("manager_reviews_session_idx").on(table.sessionId, table.createdAt),
   index("manager_reviews_reviewer_idx").on(table.reviewerId),
@@ -308,19 +324,19 @@ export const managerReviews = mysqlTable("manager_reviews", {
 export type ManagerReview = typeof managerReviews.$inferSelect;
 export type InsertManagerReview = typeof managerReviews.$inferInsert;
 
-export const policyDocuments = mysqlTable("policy_documents", {
-  id: int("id").autoincrement().primaryKey(),
+export const policyDocuments = pgTable("policy_documents", {
+  id: serial("id").primaryKey(),
   title: varchar("title", { length: 256 }).notNull(),
-  department: mysqlEnum("department", DEPARTMENTS),
-  scenarioFamilies: json("scenarioFamilies").$type<string[]>(),
+  department: departmentEnum("department"),
+  scenarioFamilies: jsonb("scenarioFamilies").$type<string[]>(),
   content: text("content").notNull(),
-  version: int("version").default(1).notNull(),
+  version: integer("version").default(1).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
-  uploadedBy: int("uploadedBy").references(() => users.id, { onDelete: "set null" }),
+  uploadedBy: integer("uploadedBy").references(() => users.id, { onDelete: "set null" }),
   storageUrl: varchar("storageUrl", { length: 1024 }),
   storageKey: varchar("storageKey", { length: 512 }),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
 }, (table) => [
   index("policy_documents_department_active_idx").on(table.department, table.isActive),
   index("policy_documents_updated_idx").on(table.updatedAt),
@@ -330,15 +346,15 @@ export const policyDocuments = mysqlTable("policy_documents", {
 export type PolicyDocument = typeof policyDocuments.$inferSelect;
 export type InsertPolicyDocument = typeof policyDocuments.$inferInsert;
 
-export const auditLogs = mysqlTable("audit_logs", {
-  id: int("id").autoincrement().primaryKey(),
-  userId: int("userId").notNull().references(() => users.id),
-  action: mysqlEnum("action", AUDIT_ACTIONS).notNull(),
+export const auditLogs = pgTable("audit_logs", {
+  id: serial("id").primaryKey(),
+  userId: integer("userId").notNull().references(() => users.id),
+  action: auditActionEnum("action").notNull(),
   targetType: varchar("targetType", { length: 64 }).notNull(),
-  targetId: int("targetId"),
-  details: json("details"),
+  targetId: integer("targetId"),
+  details: jsonb("details"),
   ipAddress: varchar("ipAddress", { length: 64 }),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("audit_logs_user_created_idx").on(table.userId, table.createdAt),
   index("audit_logs_action_idx").on(table.action),

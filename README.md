@@ -57,35 +57,35 @@ If by "live update" you mean pushing code and having the hosted app update autom
 Set these in Vercel for both Preview and Production as needed:
 
 - `JWT_SECRET`
-- `DATABASE_URL`
-- `VITE_APP_ID`
-- `OAUTH_SERVER_URL`
-- `OWNER_OPEN_ID`
+- `DATABASE_URL` using the Supabase `Connect` -> `Transaction pooler` string
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_PUBLISHABLE_KEY`
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`
+- `SUPABASE_SESSION_MEDIA_BUCKET`
+- `SUPABASE_POLICY_DOCUMENTS_BUCKET`
+- `SUPABASE_GENERATED_ASSETS_BUCKET`
+- `SUPABASE_SEED_PASSWORD`
 - `BUILT_IN_FORGE_API_URL`
 - `BUILT_IN_FORGE_API_KEY`
 - `REALTIME_MODEL`
 - `REALTIME_VOICE`
-
-### Demo mode
-
-`ALLOW_DEMO_MODE` controls whether the app can use:
-
-- local role-picker sign-in
-- deterministic AI fallback when no provider credentials are configured
-
-Recommended:
-
-- Preview: `ALLOW_DEMO_MODE=true` only if you want demo behavior
-- Production: `ALLOW_DEMO_MODE=false`
 
 ## Vercel setup
 
 This repo includes:
 
 - `vercel.json` for SPA routing and function config
-- `api/[...all].ts` as the serverless API entrypoint
+- `api/trpc/index.ts` and `api/trpc/[...trpc].ts` as the serverless API entrypoints
 - `server/_core/app.ts` as the shared Express app factory
 - `vite.config.ts` configured to build to `public/` on Vercel and `dist/public` locally
+
+In Vercel Project Settings:
+
+- Framework Preset: `Other`
+- Install Command: `pnpm install --frozen-lockfile`
+- Build Command: `pnpm build:vercel`
 
 ## Validation
 
@@ -101,5 +101,6 @@ pnpm build
 
 - GitHub is the source of truth.
 - Vercel handles deployments.
-- For real production usage, do not rely on demo mode.
-- If you need persistent demo data, connect a real managed MySQL database and run migrations/seeds against it.
+- This app is now designed for Supabase Postgres, Supabase Auth, and Supabase Storage.
+- Use the Supabase transaction pooler connection string for `DATABASE_URL`; it is the most reliable option for Vercel and remote CLI access.
+- For a fresh project, create the three buckets above, then run `pnpm db:push` and `pnpm db:seed`.

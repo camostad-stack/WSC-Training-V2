@@ -132,8 +132,8 @@ export async function createManagerReview(
         ? `Follow-up drill: ${nextDrillTemplate.title}`
         : `Follow-up drill: ${assignedNextDrillFamily!.replace(/_/g, " ")}`,
       notes: input.followUpAction ?? input.managerNotes ?? null,
-    } as any);
-    const assignmentId = assignmentInsert[0]?.insertId;
+    } as any).returning({ id: assignments.id });
+    const assignmentId = assignmentInsert[0]?.id;
     await logAudit(reviewer.id, "assignment_create", "assignment", assignmentId, {
       source: "manager_review",
       sessionId: input.sessionId,

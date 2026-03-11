@@ -35,7 +35,7 @@ import {
 import { PromptExecutionError, type PipelineFailure } from "./errors";
 import { runPrompt } from "./prompt-runner";
 import { AI_SERVICE_REGISTRY } from "./registry";
-import { departmentLabels, familyLabels, scenarioFamiliesByDepartment } from "@shared/wsc-content";
+import { departmentLabels, familyLabels, getScenarioGoal, scenarioFamiliesByDepartment } from "@shared/wsc-content";
 import { WSC_SCENARIO_TEMPLATE_SEEDS } from "../../wsc-seed-data";
 
 const DEFAULT_CATEGORY_SCORES = {
@@ -50,8 +50,6 @@ const DEFAULT_CATEGORY_SCORES = {
   visible_professionalism: 0,
   closing_control: 0,
 } as const;
-
-const LOCAL_AI_ENABLED = ENV.allowDemoMode && !ENV.forgeApiKey;
 
 export interface EvaluationPipelineResult {
   processingStatus: "completed" | "invalid" | "reprocess";
@@ -133,6 +131,336 @@ function scoreEmployeeMessage(message: string) {
   return { empathy, ownership, direct, policy, avoidant, critical, escalation };
 }
 
+function hasPatternMatch(text: string, patterns: RegExp[]) {
+  return patterns.some(pattern => pattern.test(text));
+}
+
+function assessGoalProgress(params: {
+  scenario: ScenarioDirectorResult;
+  transcript: TranscriptTurn[];
+  employeeResponse: string;
+  score: ReturnType<typeof scoreEmployeeMessage>;
+}) {
+  const lower = params.employeeResponse.toLowerCase();
+  const employeeTurns = params.transcript.filter(turn => turn.role === "employee").length;
+  const firstEmployeeTurn = employeeTurns <= 1;
+  const goal = getScenarioGoal(params.scenario);
+  const discoverySignal = /\?/.test(params.employeeResponse)
+    || hasPatternMatch(lower, [/\bwhat are you looking for\b/, /\bwhat matters most\b/, /\bhow often\b/, /\btell me about\b/, /\bwhat kind of\b/]);
+  const fitSignal = hasPatternMatch(lower, [/\bbest fit\b/, /\brecommend\b/, /\bbased on what you told me\b/, /\bfor someone like you\b/, /\btrial\b/, /\btour\b/, /\bbooking\b/, /\bbook\b/]);
+  const actionSignal = hasPatternMatch(lower, [/\bactivate\b/, /\bcall\b/, /\bdispatch\b/, /\bsend\b/, /\bsecure\b/, /\bblock\b/, /\btag\b/, /\bclose\b/, /\bclean\b/, /\bverify\b/, /\bcheck\b/, /\bhandle\b/, /\bfix\b/, /\bprocess\b/, /\breverse\b/, /\brebook\b/, /\bschedule\b/, /\bupdate\b/]);
+  const directionSignal = hasPatternMatch(lower, [/\bstay\b/, /\bkeep\b/, /\bclear\b/, /\bmove\b/, /\bleave\b/, /\bstep back\b/, /\bdo not\b/, /\bcome with me\b/, /\bkeep people back\b/, /\btag out\b/, /\bblock it\b/]);
+  const timelineSignal = hasPatternMatch(lower, [/\bnext step\b/, /\bnext update\b/, /\bwithin\b/, /\bby\b/, /\btoday\b/, /\bbefore\b/, /\bafter\b/, /\bminutes\b/, /\bhours\b/, /\bhear back\b/, /\bupdate you\b/]);
+
+  if (params.scenario.scenario_family === "emergency_response") {
+    if (!actionSignal && !params.score.ownership) {
+      return {
+        goal,
+        goalAdvanced: false,
+        goalResolved: false,
+        trustDelta: 0,
+        clarityDelta: 0,
+        reply: "What is happening right now? Is emergency response moving, and what do you need me to do immediately?",
+      };
+    }
+    if (!directionSignal) {
+      return {
+        goal,
+        goalAdvanced: true,
+        goalResolved: false,
+        trustDelta: 1,
+        clarityDelta: 1,
+        reply: "Okay. What do you need me or the people nearby to do right now while you take control?",
+      };
+    }
+    if (!timelineSignal) {
+      return {
+        goal,
+        goalAdvanced: true,
+        goalResolved: false,
+        trustDelta: 1,
+        clarityDelta: 2,
+        reply: "Okay. Keep it moving. Who is with them now, and what is the next update until care arrives?",
+      };
+    }
+    return {
+      goal,
+      goalAdvanced: true,
+      goalResolved: true,
+      trustDelta: 2,
+      clarityDelta: 2,
+      reply: "Okay. I understand. I will do that. Keep me updated until care arrives.",
+    };
+  }
+
+  if (params.scenario.department === "mod_emergency") {
+    if (!actionSignal && !params.score.ownership) {
+      return {
+        goal,
+        goalAdvanced: false,
+        goalResolved: false,
+        trustDelta: 0,
+        clarityDelta: 0,
+        reply: "What are you doing right now to control this and make it safe?",
+      };
+    }
+    if (!directionSignal && !timelineSignal) {
+      return {
+        goal,
+        goalAdvanced: true,
+        goalResolved: false,
+        trustDelta: 1,
+        clarityDelta: 1,
+        reply: "Okay. What is secured now, and what happens next from here?",
+      };
+    }
+    return {
+      goal,
+      goalAdvanced: true,
+      goalResolved: true,
+      trustDelta: 2,
+      clarityDelta: 2,
+      reply: "Okay. That sounds controlled. Keep the response moving and let me know the next update.",
+    };
+  }
+
+  if (params.scenario.department === "golf") {
+    if (firstEmployeeTurn && !discoverySignal) {
+      return {
+        goal,
+        goalAdvanced: false,
+        goalResolved: false,
+        trustDelta: 0,
+        clarityDelta: 0,
+        reply: "Before you pitch me, can you ask what I’m actually looking for?",
+      };
+    }
+    if (discoverySignal && !fitSignal) {
+      return {
+        goal,
+        goalAdvanced: true,
+        goalResolved: false,
+        trustDelta: 1,
+        clarityDelta: 1,
+        reply: "Okay. Based on that, what would you actually recommend for someone like me?",
+      };
+    }
+    if (fitSignal && !timelineSignal) {
+      return {
+        goal,
+        goalAdvanced: true,
+        goalResolved: false,
+        trustDelta: 1,
+        clarityDelta: 2,
+        reply: "That helps. What would the next step be if I wanted to move forward?",
+      };
+    }
+    return {
+      goal,
+      goalAdvanced: true,
+      goalResolved: fitSignal,
+      trustDelta: 2,
+      clarityDelta: 2,
+      reply: "Okay. That feels more specific and useful. I can picture the next step now.",
+    };
+  }
+
+  if (!params.score.empathy && !params.score.ownership) {
+    return {
+      goal,
+      goalAdvanced: false,
+      goalResolved: false,
+      trustDelta: 0,
+      clarityDelta: 0,
+      reply: "I need to know you understand the actual problem and that someone is taking ownership of it.",
+    };
+  }
+  if (!actionSignal) {
+    return {
+      goal,
+      goalAdvanced: true,
+      goalResolved: false,
+      trustDelta: 1,
+      clarityDelta: 1,
+      reply: "Okay. What are you checking or doing right now to move this forward?",
+    };
+  }
+  if (!timelineSignal) {
+    return {
+      goal,
+      goalAdvanced: true,
+      goalResolved: false,
+      trustDelta: 1,
+      clarityDelta: 2,
+      reply: "Alright. When exactly should I expect the next update from you?",
+    };
+  }
+  return {
+    goal,
+    goalAdvanced: true,
+    goalResolved: true,
+    trustDelta: 2,
+    clarityDelta: 2,
+    reply: "Okay. That gives me a clear next step and a real update to expect.",
+  };
+}
+
+function isSafetyOrUrgentScenario(scenario: ScenarioDirectorResult) {
+  return scenario.department === "mod_emergency"
+    || ["slippery_entry_complaint", "unsafe_equipment_report", "weather_range_incident", "emergency_response"].includes(scenario.scenario_family);
+}
+
+type PriorityCategory = keyof typeof DEFAULT_CATEGORY_SCORES;
+
+function getScenarioPriorityProfile(scenario: ScenarioDirectorResult) {
+  if (scenario.scenario_family === "emergency_response") {
+    return {
+      primary: ["ownership", "problem_solving", "escalation_judgment", "clarity_directness", "visible_professionalism"] as PriorityCategory[],
+      secondary: ["listening_empathy", "de_escalation"] as PriorityCategory[],
+      deEmphasized: ["opening_warmth", "policy_accuracy", "closing_control"] as PriorityCategory[],
+      guidance: [
+        "Focus on the actual patient or incident first, not policy recital.",
+        "Reward scene control, direct instructions, ownership, and stabilizing the situation until care arrives.",
+        "Do not over-penalize a lack of polished service language during active emergency control.",
+      ],
+      practiceFocus: "stabilize_until_care_arrives",
+    };
+  }
+
+  if (scenario.department === "mod_emergency") {
+    return {
+      primary: ["ownership", "problem_solving", "escalation_judgment", "clarity_directness"] as PriorityCategory[],
+      secondary: ["de_escalation", "visible_professionalism", "listening_empathy"] as PriorityCategory[],
+      deEmphasized: ["opening_warmth"] as PriorityCategory[],
+      guidance: [
+        "Prioritize safety control, operational ownership, and a clear next action.",
+        "Treat reassurance as useful when it supports control, not as a substitute for action.",
+      ],
+      practiceFocus: "ownership_and_problem_solving",
+    };
+  }
+
+  if (scenario.department === "golf") {
+    return {
+      primary: ["opening_warmth", "listening_empathy", "problem_solving", "closing_control"] as PriorityCategory[],
+      secondary: ["clarity_directness", "ownership"] as PriorityCategory[],
+      deEmphasized: ["escalation_judgment"] as PriorityCategory[],
+      guidance: [
+        "Prioritize opening warmth, discovery, confidence, and a clean close.",
+        "In sales-service scenarios, the employee should sound helpful and commercially competent, not rushed or defensive.",
+      ],
+      practiceFocus: "opening_warmth_and_closing_control",
+    };
+  }
+
+  return {
+    primary: ["listening_empathy", "ownership", "clarity_directness", "closing_control"] as PriorityCategory[],
+    secondary: ["problem_solving", "de_escalation"] as PriorityCategory[],
+    deEmphasized: [] as PriorityCategory[],
+    guidance: [
+      "Prioritize calm acknowledgment, practical ownership, and a clean next step.",
+      "Score the employee on whether they moved the real situation forward, not whether they sounded polished for its own sake.",
+    ],
+    practiceFocus: "humanistic_ownership",
+  };
+}
+
+function buildScenarioPriorityLens(scenario: ScenarioDirectorResult) {
+  const profile = getScenarioPriorityProfile(scenario);
+  return [
+    `Primary scoring priorities: ${profile.primary.join(", ")}`,
+    `Secondary priorities: ${profile.secondary.join(", ") || "none"}`,
+    `De-emphasized categories: ${profile.deEmphasized.join(", ") || "none"}`,
+    ...profile.guidance,
+  ].join("\n");
+}
+
+function applyScenarioPriorityWeights(
+  scenario: ScenarioDirectorResult,
+  categoryScores: Record<PriorityCategory, number>,
+) {
+  const profile = getScenarioPriorityProfile(scenario);
+  const adjusted = { ...categoryScores };
+
+  for (const key of profile.primary) adjusted[key] = clampScore(adjusted[key] + 2);
+  for (const key of profile.secondary) adjusted[key] = clampScore(adjusted[key] + 1);
+  for (const key of profile.deEmphasized) adjusted[key] = clampScore(adjusted[key] - 1);
+
+  return adjusted;
+}
+
+function buildIdealResponseExample(scenario: ScenarioDirectorResult) {
+  if (scenario.scenario_family === "emergency_response") {
+    return "I am activating emergency response now. Stay with them if it is safe, keep the area clear, and I will keep control of this until care arrives.";
+  }
+
+  if (scenario.department === "mod_emergency") {
+    return "I am taking ownership of this now. Here is the immediate safety step, who is responding, and when you will get the next update.";
+  }
+
+  if (scenario.department === "golf") {
+    return "Thanks for coming in. Let me understand what you are trying to get out of the club, then I will point you to the best fit and close on the next step.";
+  }
+
+  return `I can see why this would be concerning. Let me handle the next step now and tell you exactly what happens next for ${familyLabels[scenario.scenario_family] || "this issue"}.`;
+}
+
+function buildScenarioCoachingGuidance(scenario: ScenarioDirectorResult) {
+  if (scenario.scenario_family === "emergency_response") {
+    return {
+      doThisNextTime: [
+        "Take control in the first sentence and say what is happening right now.",
+        "Give one or two simple directions that stabilize the person or scene until care arrives.",
+        "Keep updates factual and brief instead of drifting into policy or explanation.",
+      ],
+      replacementPhrases: [
+        "I am taking control of this now.",
+        "Stay with them if it is safe. Help is moving and I will keep you updated.",
+      ],
+    };
+  }
+
+  if (scenario.department === "mod_emergency") {
+    return {
+      doThisNextTime: [
+        "Lead with the immediate safety action before discussing follow-up.",
+        "State who is responding and what is being secured right now.",
+        "Close with the next operational update so the member knows what happens next.",
+      ],
+      replacementPhrases: [
+        "I am handling the immediate safety step now.",
+        "Here is what is being secured, and here is the next update you can expect.",
+      ],
+    };
+  }
+
+  if (scenario.department === "golf") {
+    return {
+      doThisNextTime: [
+        "Open warmer so the prospect or member feels helped instead of pitched.",
+        "Ask one clean discovery question before explaining value or options.",
+        "Close with a firm next step instead of leaving the conversation open-ended.",
+      ],
+      replacementPhrases: [
+        "Welcome in. Let me get a quick read on what you want out of this so I can point you the right way.",
+        "Based on what you told me, here is the best fit and the next step to get it moving.",
+      ],
+    };
+  }
+
+  return {
+    doThisNextTime: [
+      "Acknowledge the concern in the first sentence in plain human language.",
+      "State the next concrete step and timeline.",
+      "Close the loop so the member knows who owns the follow-up.",
+    ],
+    replacementPhrases: [
+      "I can see why that would be concerning.",
+      "Here is what I am doing next, and here is when you will hear back.",
+    ],
+  };
+}
+
 function buildLocalTurnResponse(params: {
   scenario: ScenarioDirectorResult;
   transcript: TranscriptTurn[];
@@ -140,38 +468,61 @@ function buildLocalTurnResponse(params: {
   employeeResponse: string;
 }) {
   const employeeTurns = params.transcript.filter(turn => turn.role === "employee").length;
+  const transcriptAlreadyIncludesLatestEmployeeTurn = params.transcript[params.transcript.length - 1]?.role === "employee";
+  const currentTurnNumber = transcriptAlreadyIncludesLatestEmployeeTurn ? employeeTurns : employeeTurns + 1;
   const score = scoreEmployeeMessage(params.employeeResponse);
+  const safetyOrUrgent = isSafetyOrUrgentScenario(params.scenario);
+  const goalProgress = assessGoalProgress({
+    scenario: params.scenario,
+    transcript: params.transcript,
+    employeeResponse: params.employeeResponse,
+    score,
+  });
   const priorTrust = params.priorState?.trust_level ?? 3;
   const priorClarity = params.priorState?.issue_clarity ?? 3;
-  const trust = clampScore(priorTrust + (score.empathy ? 2 : -1) + (score.ownership ? 2 : 0) + (score.critical ? -4 : 0));
-  const issueClarity = clampScore(priorClarity + (score.direct ? 2 : 0) + (score.policy ? 1 : 0) + (score.avoidant ? -2 : 0));
-  const managerNeeded = score.critical || (score.escalation && !score.ownership);
-  const scenarioComplete = score.critical || employeeTurns >= params.scenario.recommended_turns || (employeeTurns >= 3 && trust >= 6 && issueClarity >= 6);
+  const trust = clampScore(
+    priorTrust
+    + (score.empathy ? 2 : safetyOrUrgent ? 0 : -1)
+    + (score.ownership ? 2 : 0)
+    + (score.direct ? 1 : 0)
+    + (score.critical ? -4 : 0)
+    + (score.avoidant ? -2 : 0),
+    0,
+    10,
+  );
+  const adjustedTrust = clampScore(
+    trust + goalProgress.trustDelta,
+  );
+  const issueClarity = clampScore(
+    priorClarity + (score.direct ? 2 : 0) + (score.policy ? 1 : 0) + (score.ownership ? 1 : 0) + (score.avoidant ? -2 : 0) + goalProgress.clarityDelta,
+  );
+  const managerNeeded = score.critical || (score.escalation && !score.ownership) || (safetyOrUrgent && !score.ownership && !score.direct);
+  const scenarioComplete = score.critical
+    || currentTurnNumber >= params.scenario.recommended_turns
+    || (currentTurnNumber >= 3 && goalProgress.goalResolved && adjustedTrust >= 6 && issueClarity >= 6);
   const updatedEmotion = score.critical
-    ? "angry"
-    : trust >= 7
-      ? "relieved"
-      : trust >= 5
-        ? "calmer"
-        : "frustrated";
-  const hiddenFact = score.empathy && employeeTurns <= 2 ? params.scenario.hidden_facts[0] || "" : "";
+    ? safetyOrUrgent ? "alarmed" : "upset"
+    : goalProgress.goalResolved
+      ? safetyOrUrgent ? "steady" : "reassured"
+      : adjustedTrust >= 7
+      ? safetyOrUrgent ? "steady" : "reassured"
+      : adjustedTrust >= 5
+        ? safetyOrUrgent ? "steady" : "calmer"
+        : safetyOrUrgent ? "concerned" : "guarded";
+  const hiddenFact = (score.empathy || score.ownership) && employeeTurns <= 2 ? params.scenario.hidden_facts[0] || "" : "";
   const customerReply = score.critical
-    ? "That answer makes this worse. I need a manager involved now."
-    : scenarioComplete && trust >= 6
-      ? "Alright. That gives me a clear next step. Please make sure that follow-up actually happens."
-      : !score.empathy
-        ? "You still haven't acknowledged why this is frustrating."
-        : !score.direct
-          ? "I need a direct answer and a specific next step."
-          : score.ownership
-            ? `Okay. If you can handle that next step today, that helps. ${hiddenFact}`.trim()
-            : "I need to know exactly what you are going to do next.";
+    ? safetyOrUrgent
+      ? "I need someone taking control right now. Tell me the immediate safety step."
+      : "That answer makes this worse. I need a manager involved now."
+    : goalProgress.goalResolved && adjustedTrust >= 6
+      ? `${goalProgress.reply} ${hiddenFact}`.trim()
+      : `${goalProgress.reply} ${hiddenFact}`.trim();
 
   return {
     customerReply: customerReplyResultSchema.parse({
       customer_reply: customerReply,
       updated_emotion: updatedEmotion,
-      trust_level: trust,
+      trust_level: adjustedTrust,
       issue_clarity: issueClarity,
       manager_needed: managerNeeded,
       scenario_complete: scenarioComplete,
@@ -182,13 +533,13 @@ function buildLocalTurnResponse(params: {
         employee_was_clear: score.direct,
         employee_used_correct_policy: score.policy,
         employee_took_ownership: score.ownership,
-        employee_should_be_pushed_harder: !score.direct || !score.ownership,
+        employee_should_be_pushed_harder: !goalProgress.goalResolved,
       },
     }),
     stateUpdate: stateUpdateResultSchema.parse({
-      turn_number: employeeTurns,
+      turn_number: currentTurnNumber,
       emotion_state: updatedEmotion,
-      trust_level: trust,
+      trust_level: adjustedTrust,
       issue_clarity: issueClarity,
       employee_flags: {
         showed_empathy: score.empathy,
@@ -210,6 +561,9 @@ function buildLocalEvaluation(params: {
   transcript: TranscriptTurn[];
   policyContext: string;
 }): EvaluationPipelineResult {
+  const priorityProfile = getScenarioPriorityProfile(params.scenarioJson);
+  const scenarioGoal = getScenarioGoal(params.scenarioJson);
+  const emergencyResponse = params.scenarioJson.scenario_family === "emergency_response";
   const employeeTurns = params.transcript.filter(turn => turn.role === "employee");
   const scores = employeeTurns.map(turn => scoreEmployeeMessage(turn.message));
   const total = Math.max(scores.length, 1);
@@ -222,11 +576,11 @@ function buildLocalEvaluation(params: {
   const criticalCount = count("critical");
   const escalationCount = count("escalation");
 
-  const categoryScores = evaluationResultSchema.shape.category_scores.parse({
+  const baseCategoryScores = evaluationResultSchema.shape.category_scores.parse({
     opening_warmth: clampScore((empathyCount / total) * 10),
     listening_empathy: clampScore((empathyCount / total) * 10),
     clarity_directness: clampScore((directCount / total) * 10),
-    policy_accuracy: clampScore((policyCount / total) * 10),
+    policy_accuracy: clampScore(emergencyResponse ? ((directCount + ownershipCount) / (2 * total)) * 10 : (policyCount / total) * 10),
     ownership: clampScore((ownershipCount / total) * 10),
     problem_solving: clampScore(((ownershipCount + directCount) / (2 * total)) * 10),
     de_escalation: clampScore((((empathyCount + ownershipCount) / (2 * total)) * 10) - criticalCount * 2),
@@ -234,6 +588,9 @@ function buildLocalEvaluation(params: {
     visible_professionalism: clampScore(8 - criticalCount * 3 - avoidantCount * 2),
     closing_control: clampScore((ownershipCount / total) * 10),
   });
+  const categoryScores = evaluationResultSchema.shape.category_scores.parse(
+    applyScenarioPriorityWeights(params.scenarioJson, baseCategoryScores),
+  );
 
   const overallScore = Math.round(
     (Object.values(categoryScores).reduce((sum, value) => sum + value, 0) / Object.values(categoryScores).length) * 10,
@@ -241,15 +598,28 @@ function buildLocalEvaluation(params: {
   const passFail = overallScore >= 75 ? "pass" : overallScore >= 60 ? "borderline" : "fail";
   const readiness = overallScore >= 85 ? "independent" : overallScore >= 75 ? "partially_independent" : overallScore >= 60 ? "shadow_ready" : "practice_more";
   const bestMoments = [
-    empathyCount > 0 ? "Acknowledged the member's concern directly." : null,
+    empathyCount > 0
+      ? params.scenarioJson.department === "golf"
+        ? "Opened in a way that made the customer easier to work with."
+        : "Acknowledged the member's concern directly."
+      : null,
     ownershipCount > 0 ? "Took ownership for the next step." : null,
     directCount > 0 ? "Kept the answer concrete instead of vague." : null,
+    ownershipCount > 0 && directCount > 0 ? `Moved the conversation toward the real goal: ${scenarioGoal.title}.` : null,
+    emergencyResponse && ownershipCount > 0 && directCount > 0 ? "Stayed focused on stabilizing the situation until care arrived." : null,
   ].filter(Boolean) as string[];
   const missedMoments = [
-    empathyCount === 0 ? "Did not clearly acknowledge the customer's frustration." : null,
-    policyCount === 0 ? "Did not anchor the response in club policy or verification." : null,
+    empathyCount === 0
+      ? params.scenarioJson.department === "golf"
+        ? "Did not create enough opening warmth before moving into the ask or explanation."
+        : "Did not clearly acknowledge the person's concern or human impact."
+      : null,
+    !emergencyResponse && policyCount === 0 ? "Did not anchor the response in club policy or verification." : null,
     avoidantCount > 0 ? "Used avoidant phrasing instead of owning the issue." : null,
+    emergencyResponse && ownershipCount === 0 ? "Did not take firm control of the emergency response." : null,
+    params.scenarioJson.department === "golf" && ownershipCount > 0 && directCount === 0 ? "Did not close with enough control or a clean next step." : null,
   ].filter(Boolean) as string[];
+  const coachingGuidance = buildScenarioCoachingGuidance(params.scenarioJson);
 
   const evaluation = evaluationResultSchema.parse({
     overall_score: overallScore,
@@ -260,9 +630,9 @@ function buildLocalEvaluation(params: {
     missed_moments: missedMoments,
     critical_mistakes: criticalCount > 0 ? ["Used language that would escalate or abandon the issue."] : [],
     coachable_mistakes: avoidantCount > 0 ? ["Replace vague or deflecting phrases with ownership and a next step."] : [],
-    most_important_correction: missedMoments[0] || "Keep the conversation grounded in empathy, ownership, and a clear next step.",
-    ideal_response_example: `I understand why this is frustrating. Let me verify the details and give you the exact next step for ${familyLabels[params.scenarioJson.scenario_family] || "this issue"} before you leave.`,
-    summary: `Local evaluation completed for ${familyLabels[params.scenarioJson.scenario_family] || params.scenarioJson.scenario_family}. This score is deterministic fallback scoring for localhost use.`,
+    most_important_correction: missedMoments[0] || `Keep the conversation grounded in the actual goal: ${scenarioGoal.title}.`,
+    ideal_response_example: buildIdealResponseExample(params.scenarioJson),
+    summary: `Local evaluation completed for ${familyLabels[params.scenarioJson.scenario_family] || params.scenarioJson.scenario_family}. Goal: ${scenarioGoal.title}. Priority lens: ${priorityProfile.primary.join(", ")}.`,
   });
 
   return {
@@ -270,11 +640,13 @@ function buildLocalEvaluation(params: {
     policyContext: params.policyContext,
     policyGrounding: policyGroundingResultSchema.parse({
       policy_accuracy: policyCount > 0 ? "partially_correct" : "not_evaluated",
-      matched_policy_points: policyCount > 0 ? ["Referenced verification or escalation instead of guessing."] : [],
-      missed_policy_points: policyCount === 0 ? ["Needed a clearer policy or verification statement."] : [],
+      matched_policy_points: policyCount > 0 || emergencyResponse ? ["Referenced verification, control, or escalation instead of guessing."] : [],
+      missed_policy_points: policyCount === 0 && !emergencyResponse ? ["Needed a clearer policy or verification statement."] : [],
       invented_or_risky_statements: criticalCount > 0 ? ["Risky phrasing increased customer friction."] : [],
       should_have_escalated: escalationCount > 0,
-      policy_notes: "Local fallback policy grounding used because no AI provider is configured.",
+      policy_notes: emergencyResponse
+        ? "Immediate emergency control was prioritized over policy recital in the scoring lens."
+        : "Local fallback policy grounding used because no AI provider is configured.",
     }),
     visibleBehavior: visibleBehaviorResultSchema.parse({
       assessment_status: "not_available",
@@ -294,26 +666,19 @@ function buildLocalEvaluation(params: {
       employee_coaching_summary: evaluation.summary,
       what_you_did_well: bestMoments,
       what_hurt_you: missedMoments,
-      do_this_next_time: [
-        "Acknowledge the concern in the first sentence.",
-        "State the next concrete step and timeline.",
-        "Escalate cleanly when authority or safety requires it.",
-      ],
-      replacement_phrases: [
-        "I understand why that is frustrating.",
-        "Let me verify that and give you the exact next step.",
-      ],
-      practice_focus: missedMoments[0] ? "ownership_and_clarity" : "consistency",
+      do_this_next_time: coachingGuidance.doThisNextTime,
+      replacement_phrases: coachingGuidance.replacementPhrases,
+      practice_focus: missedMoments[0] ? priorityProfile.practiceFocus : scenarioGoal.title.toLowerCase().replace(/\s+/g, "_"),
       next_recommended_scenario: params.scenarioJson.scenario_family,
     }),
     managerDebrief: managerDebriefResultSchema.parse({
-      manager_summary: `Local fallback scoring for ${familyLabels[params.scenarioJson.scenario_family] || params.scenarioJson.scenario_family}. Review the transcript for coaching detail.`,
+      manager_summary: `Local fallback scoring for ${familyLabels[params.scenarioJson.scenario_family] || params.scenarioJson.scenario_family}. Goal: ${scenarioGoal.title}. Priority lens: ${priorityProfile.primary.join(", ")}.`,
       performance_signal: overallScore >= 75 ? "green" : overallScore >= 60 ? "yellow" : "red",
       top_strengths: bestMoments,
       top_corrections: missedMoments.length > 0 ? missedMoments : ["Push the employee to stay specific under pressure."],
       whether_live_shadowing_is_needed: overallScore < 60,
       whether_manager_follow_up_is_needed: overallScore < 75,
-      recommended_follow_up_action: overallScore < 75 ? "Assign another drill in the same family with emphasis on empathy and ownership." : "Advance to the next difficulty.",
+      recommended_follow_up_action: overallScore < 75 ? `Assign another drill in the same family with emphasis on ${priorityProfile.primary.join(", ")}.` : "Advance to the next difficulty.",
       recommended_next_drill: params.scenarioJson.scenario_family,
     }),
   };
@@ -616,10 +981,6 @@ export async function generateScenario(params: {
   scenarioFamily?: string;
   employeeLevelEstimate?: string;
 }): Promise<ScenarioDirectorResult> {
-  if (LOCAL_AI_ENABLED) {
-    return buildLocalScenario(params);
-  }
-
   const departmentKey = (params.department in scenarioFamiliesByDepartment
     ? params.department
     : "customer_service") as keyof typeof scenarioFamiliesByDepartment;
@@ -657,13 +1018,14 @@ export async function processEmployeeTurn(params: {
   employeeResponse: string;
 }): Promise<{ customerReply: CustomerReplyResult; stateUpdate: StateUpdateResult }> {
   const transcript = transcriptSchema.parse(params.transcript);
+  const parsedScenario = scenarioDirectorResultSchema.parse(params.scenarioJson);
   const parsedPriorState = stateUpdateResultSchema.partial().safeParse(params.stateJson).success
     ? (params.stateJson as Partial<StateUpdateResult>)
     : undefined;
 
-  if (LOCAL_AI_ENABLED) {
+  if (!ENV.forgeApiKey) {
     return buildLocalTurnResponse({
-      scenario: scenarioDirectorResultSchema.parse(params.scenarioJson),
+      scenario: parsedScenario,
       transcript,
       priorState: parsedPriorState,
       employeeResponse: params.employeeResponse,
@@ -711,10 +1073,11 @@ export async function runPostSessionEvaluation(params: {
   policyContext?: string;
   media?: unknown;
 }): Promise<EvaluationPipelineResult> {
+  const parsedScenario = scenarioDirectorResultSchema.parse(params.scenarioJson);
   const policyContext = params.policyContext
     || await retrievePolicyContext({
-      department: params.scenarioJson?.department,
-      scenarioFamily: params.scenarioJson?.scenario_family,
+      department: parsedScenario.department,
+      scenarioFamily: parsedScenario.scenario_family,
     });
 
   const transcriptAssessment = assessTranscript(params.transcript);
@@ -727,14 +1090,6 @@ export async function runPostSessionEvaluation(params: {
   }
   const transcript = transcriptAssessment.transcript!;
 
-  if (LOCAL_AI_ENABLED) {
-    return buildLocalEvaluation({
-      scenarioJson: scenarioDirectorResultSchema.parse(params.scenarioJson),
-      transcript,
-      policyContext,
-    });
-  }
-
   const parsedStateHistory = stateHistorySchema.safeParse(params.stateHistory);
   const stateHistory = parsedStateHistory.success ? parsedStateHistory.data : [];
 
@@ -745,6 +1100,14 @@ export async function runPostSessionEvaluation(params: {
       failure: mediaAssessment.failure,
       policyContext,
       visibleBehavior: mediaAssessment.visibleBehavior,
+    });
+  }
+
+  if (!ENV.forgeApiKey) {
+    return buildLocalEvaluation({
+      scenarioJson: parsedScenario,
+      transcript,
+      policyContext,
     });
   }
 
@@ -826,7 +1189,7 @@ export async function updateEmployeeProfile(params: {
   currentProfile: any;
   sessionBundle: any;
 }): Promise<ProfileUpdateResult> {
-  if (LOCAL_AI_ENABLED) {
+  if (!ENV.forgeApiKey) {
     return buildLocalProfileUpdate(params);
   }
 
@@ -842,7 +1205,7 @@ export async function getAdaptiveDifficulty(params: {
   employeeProfile: any;
   recentSessions: any[];
 }): Promise<AdaptiveDifficultyResult> {
-  if (LOCAL_AI_ENABLED) {
+  if (!ENV.forgeApiKey) {
     return buildLocalAdaptiveDifficulty(params);
   }
 

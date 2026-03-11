@@ -36,9 +36,17 @@ import {
 
 const emotionColors: Record<string, string> = {
   calm: "bg-success/20 text-success border-success/30",
+  steady: "bg-success/20 text-success border-success/30",
+  reassured: "bg-success/20 text-success border-success/30",
   concerned: "bg-amber/20 text-amber border-amber/30",
+  unsettled: "bg-amber/20 text-amber border-amber/30",
+  guarded: "bg-amber/20 text-amber border-amber/30",
+  stressed: "bg-amber/20 text-amber border-amber/30",
+  protective: "bg-amber/20 text-amber border-amber/30",
   frustrated: "bg-amber/20 text-amber border-amber/30",
   angry: "bg-danger/20 text-danger border-danger/30",
+  upset: "bg-danger/20 text-danger border-danger/30",
+  alarmed: "bg-danger/20 text-danger border-danger/30",
   confused: "bg-teal/20 text-teal border-teal/30",
   skeptical: "bg-amber/20 text-amber border-amber/30",
   relieved: "bg-success/20 text-success border-success/30",

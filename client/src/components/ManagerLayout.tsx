@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import {
   LayoutDashboard,
@@ -11,11 +12,18 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
+  ArrowRightLeft,
+  Loader2,
 } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { useState, type ReactNode } from "react";
 import { Separator } from "@/components/ui/separator";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
+import { departmentLabels } from "@/features/simulator/config";
 
 const sidebarItems = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/manage" },
@@ -29,9 +37,28 @@ const sidebarItems = [
 ] as const;
 
 export default function ManagerLayout({ children }: { children: ReactNode }) {
-  const { user, logout } = useAuth();
+  const { user, logout, refresh } = useAuth();
   const [location, setLocation] = useLocation();
   const [collapsed, setCollapsed] = useState(false);
+  const [switchOpen, setSwitchOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const isGlobalAdmin = ["admin", "super_admin"].includes(user?.role || "");
+  const usersList = trpc.admin.listUsers.useQuery(
+    { isActive: true },
+    { enabled: isGlobalAdmin, retry: false, refetchOnWindowFocus: false },
+  );
+  const startImpersonation = trpc.auth.startImpersonation.useMutation({
+    onSuccess: async ({ targetUser }) => {
+      await refresh();
+      setSwitchOpen(false);
+      setSearch("");
+      setLocation("/");
+      toast.success(`Now viewing the employee experience as ${targetUser.name || targetUser.email || `User #${targetUser.id}`}`);
+    },
+    onError: (error) => {
+      toast.error(error.message);
+    },
+  });
 
   const isActive = (path: string) => {
     if (path === "/manage") return location === "/manage";
@@ -58,6 +85,16 @@ export default function ManagerLayout({ children }: { children: ReactNode }) {
       </div>
     );
   }
+
+  const switchableUsers = (usersList.data || [])
+    .filter((item: any) => ["employee", "shift_lead"].includes(item.role))
+    .filter((item: any) => {
+      const query = search.trim().toLowerCase();
+      if (!query) return true;
+      return [item.name, item.email, item.department]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    });
 
   return (
     <div className="min-h-screen bg-background flex">
@@ -103,6 +140,24 @@ export default function ManagerLayout({ children }: { children: ReactNode }) {
             );
           })}
         </nav>
+
+        {isGlobalAdmin && (
+          <div className="px-2 pb-2">
+            <Button
+              variant="outline"
+              className={`w-full border-border bg-background/60 hover:bg-secondary/70 ${collapsed ? "px-0" : "justify-start"}`}
+              onClick={() => setSwitchOpen(true)}
+              title={collapsed ? "Switch to employee view" : undefined}
+            >
+              {startImpersonation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ArrowRightLeft className="h-4 w-4 shrink-0" />
+              )}
+              {!collapsed && <span className="ml-2">Test Employee View</span>}
+            </Button>
+          </div>
+        )}
 
         {/* Collapse toggle */}
         <div className="px-2 py-1">
@@ -150,6 +205,69 @@ export default function ManagerLayout({ children }: { children: ReactNode }) {
           {children}
         </div>
       </main>
+
+      <Dialog open={switchOpen} onOpenChange={setSwitchOpen}>
+        <DialogContent className="bg-card border-border">
+          <DialogHeader>
+            <DialogTitle>Switch To Employee View</DialogTitle>
+            <DialogDescription>
+              Start the app as a selected employee without signing out of the admin account.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search employee by name or email"
+              className="bg-background border-border"
+            />
+
+            <div className="max-h-[380px] space-y-2 overflow-y-auto">
+              {usersList.isLoading && (
+                <div className="flex items-center justify-center py-8 text-muted-foreground">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Loading employees...
+                </div>
+              )}
+
+              {!usersList.isLoading && switchableUsers.length === 0 && (
+                <div className="rounded-md border border-border bg-background/60 px-4 py-6 text-sm text-muted-foreground">
+                  No active employee accounts matched your search.
+                </div>
+              )}
+
+              {switchableUsers.map((item: any) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => startImpersonation.mutate({ targetUserId: item.id })}
+                  disabled={startImpersonation.isPending}
+                  className="w-full rounded-md border border-border bg-background/60 px-4 py-3 text-left transition-colors hover:bg-secondary/60 disabled:opacity-60"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium truncate">{item.name || `User #${item.id}`}</div>
+                      <div className="text-xs text-muted-foreground truncate">{item.email || "No email"}</div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className="border-border text-[10px] uppercase tracking-wider">
+                          {item.role === "shift_lead" ? "Shift Lead" : "Employee"}
+                        </Badge>
+                        {item.department && (
+                          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                            {departmentLabels[item.department as keyof typeof departmentLabels] || item.department}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-xs text-teal shrink-0">View</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

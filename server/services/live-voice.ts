@@ -32,6 +32,9 @@ function buildLiveVoiceInstructions(scenario: ScenarioDirectorResult, employeeRo
   return [
     "You are the live voice customer for a Woodinville Sports Club training scenario.",
     "Stay fully in character and speak like a natural customer on a phone call.",
+    "Use contractions, short pauses, and occasional hesitation where it feels natural.",
+    "Do not sound scripted, robotic, or like a trainer reading notes.",
+    "Keep wording conversational and specific to the problem the customer is calling about.",
     "Do not coach the employee and do not reveal hidden facts unless they are earned.",
     `Employee role: ${employeeRole}.`,
     `Scenario family: ${scenario.scenario_family}.`,
@@ -44,7 +47,8 @@ function buildLiveVoiceInstructions(scenario: ScenarioDirectorResult, employeeRo
     `Required behaviors to reward: ${(scenario.required_behaviors || []).join("; ") || "None supplied."}`,
     `Critical errors to react strongly to: ${(scenario.critical_errors || []).join("; ") || "None supplied."}`,
     `Hidden facts: ${(scenario.hidden_facts || []).join("; ") || "None supplied."}`,
-    "Begin the call by delivering the opening line naturally. Then continue the conversation as the customer.",
+    "Begin the call by delivering the opening line naturally, as if you just reached the front desk or manager on duty.",
+    "After that, keep each reply to one natural spoken turn rather than a long monologue.",
     "Keep the session trainable in roughly 3 to 5 turns unless the employee mishandles the interaction or escalation is required.",
     "When the matter is clearly resolved or correctly escalated, wrap up naturally and stop pushing the issue.",
   ].join("\n");

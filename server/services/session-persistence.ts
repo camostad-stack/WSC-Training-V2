@@ -215,8 +215,11 @@ export async function saveSimulationSession(userId: number, input: SaveSimulatio
   }
 
   const sessionValues = buildSessionValues(userId, input);
-  const result = await db.insert(simulationSessions).values(sessionValues as any);
-  const sessionId = result[0]?.insertId ?? null;
+  const result = await db
+    .insert(simulationSessions)
+    .values(sessionValues as any)
+    .returning({ id: simulationSessions.id });
+  const sessionId = result[0]?.id ?? null;
 
   await updateAssignmentCompletionIfNeeded(input.assignmentId, input.status === "completed" && Boolean(input.evaluationResult));
   await updateEmployeeProfileFromSession(userId, {

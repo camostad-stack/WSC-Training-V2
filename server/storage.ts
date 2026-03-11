@@ -1,102 +1,110 @@
-// Preconfigured storage helpers for Manus WebDev templates
-// Uses the Biz-provided storage proxy (Authorization: Bearer <token>)
+import { getSupabaseAdmin } from "./_core/supabase";
+import { ENV } from "./_core/env";
 
-import { ENV } from './_core/env';
+export type StorageBucket = "session-media" | "policy-documents" | "generated-assets";
 
-type StorageConfig = { baseUrl: string; apiKey: string };
+const DEFAULT_BUCKETS: Record<StorageBucket, string> = {
+  "session-media": ENV.supabaseSessionMediaBucket,
+  "policy-documents": ENV.supabasePolicyDocumentsBucket,
+  "generated-assets": ENV.supabaseGeneratedAssetsBucket,
+};
 
-function getStorageConfig(): StorageConfig {
-  const baseUrl = ENV.forgeApiUrl;
-  const apiKey = ENV.forgeApiKey;
+function resolveBucket(bucket: StorageBucket) {
+  const bucketName = DEFAULT_BUCKETS[bucket];
+  if (!bucketName) {
+    throw new Error(`Supabase bucket is not configured for ${bucket}`);
+  }
+  return bucketName;
+}
 
-  if (!baseUrl || !apiKey) {
-    throw new Error(
-      "Storage proxy credentials missing: set BUILT_IN_FORGE_API_URL and BUILT_IN_FORGE_API_KEY"
-    );
+function normalizeKey(key: string) {
+  return key.replace(/^\/+/, "");
+}
+
+function splitBucketAndKey(path: string, fallbackBucket: StorageBucket = "generated-assets") {
+  const normalized = normalizeKey(path);
+  const segments = normalized.split("/");
+  const bucketMatch = (Object.keys(DEFAULT_BUCKETS) as StorageBucket[]).find(
+    (bucket) => segments[0] === resolveBucket(bucket),
+  );
+
+  if (bucketMatch) {
+    return {
+      bucketName: resolveBucket(bucketMatch),
+      key: segments.slice(1).join("/"),
+    };
   }
 
-  return { baseUrl: baseUrl.replace(/\/+$/, ""), apiKey };
+  return {
+    bucketName: resolveBucket(fallbackBucket),
+    key: normalized,
+  };
 }
 
-function buildUploadUrl(baseUrl: string, relKey: string): URL {
-  const url = new URL("v1/storage/upload", ensureTrailingSlash(baseUrl));
-  url.searchParams.set("path", normalizeKey(relKey));
-  return url;
+function toBlob(data: Buffer | Uint8Array | string, contentType: string) {
+  if (typeof data === "string") {
+    return new Blob([data], { type: contentType });
+  }
+  return new Blob([new Uint8Array(data)], { type: contentType });
 }
 
-async function buildDownloadUrl(
-  baseUrl: string,
-  relKey: string,
-  apiKey: string
-): Promise<string> {
-  const downloadApiUrl = new URL(
-    "v1/storage/downloadUrl",
-    ensureTrailingSlash(baseUrl)
-  );
-  downloadApiUrl.searchParams.set("path", normalizeKey(relKey));
-  const response = await fetch(downloadApiUrl, {
-    method: "GET",
-    headers: buildAuthHeaders(apiKey),
-  });
-  return (await response.json()).url;
+export function buildStoragePath(bucket: StorageBucket, key: string) {
+  const bucketName = resolveBucket(bucket);
+  return `${bucketName}/${normalizeKey(key)}`;
 }
 
-function ensureTrailingSlash(value: string): string {
-  return value.endsWith("/") ? value : `${value}/`;
+export function getSupabaseStoragePublicUrl(path: string, fallbackBucket?: StorageBucket) {
+  const { bucketName, key } = splitBucketAndKey(path, fallbackBucket);
+  return getSupabaseAdmin().storage.from(bucketName).getPublicUrl(key).data.publicUrl;
 }
 
-function normalizeKey(relKey: string): string {
-  return relKey.replace(/^\/+/, "");
-}
+export async function createSignedStorageUrl(path: string, options?: {
+  expiresIn?: number;
+  fallbackBucket?: StorageBucket;
+}) {
+  const { bucketName, key } = splitBucketAndKey(path, options?.fallbackBucket);
+  const { data, error } = await getSupabaseAdmin().storage
+    .from(bucketName)
+    .createSignedUrl(key, options?.expiresIn ?? 60 * 60);
 
-function toFormData(
-  data: Buffer | Uint8Array | string,
-  contentType: string,
-  fileName: string
-): FormData {
-  const blob =
-    typeof data === "string"
-      ? new Blob([data], { type: contentType })
-      : new Blob([data as any], { type: contentType });
-  const form = new FormData();
-  form.append("file", blob, fileName || "file");
-  return form;
-}
+  if (error || !data?.signedUrl) {
+    throw new Error(error?.message || "Failed to create signed storage URL");
+  }
 
-function buildAuthHeaders(apiKey: string): HeadersInit {
-  return { Authorization: `Bearer ${apiKey}` };
+  return data.signedUrl;
 }
 
 export async function storagePut(
   relKey: string,
   data: Buffer | Uint8Array | string,
-  contentType = "application/octet-stream"
+  contentType = "application/octet-stream",
+  bucket: StorageBucket = "generated-assets",
 ): Promise<{ key: string; url: string }> {
-  const { baseUrl, apiKey } = getStorageConfig();
+  const bucketName = resolveBucket(bucket);
   const key = normalizeKey(relKey);
-  const uploadUrl = buildUploadUrl(baseUrl, key);
-  const formData = toFormData(data, contentType, key.split("/").pop() ?? key);
-  const response = await fetch(uploadUrl, {
-    method: "POST",
-    headers: buildAuthHeaders(apiKey),
-    body: formData,
+  const { error } = await getSupabaseAdmin().storage.from(bucketName).upload(key, toBlob(data, contentType), {
+    contentType,
+    upsert: true,
   });
 
-  if (!response.ok) {
-    const message = await response.text().catch(() => response.statusText);
-    throw new Error(
-      `Storage upload failed (${response.status} ${response.statusText}): ${message}`
-    );
+  if (error) {
+    throw new Error(`Supabase storage upload failed: ${error.message}`);
   }
-  const url = (await response.json()).url;
-  return { key, url };
+
+  const storagePath = buildStoragePath(bucket, key);
+  return {
+    key: storagePath,
+    url: getSupabaseStoragePublicUrl(storagePath, bucket),
+  };
 }
 
-export async function storageGet(relKey: string): Promise<{ key: string; url: string; }> {
-  const { baseUrl, apiKey } = getStorageConfig();
-  const key = normalizeKey(relKey);
+export async function storageGet(
+  path: string,
+  options?: { expiresIn?: number; fallbackBucket?: StorageBucket },
+): Promise<{ key: string; url: string }> {
+  const normalizedPath = normalizeKey(path);
   return {
-    key,
-    url: await buildDownloadUrl(baseUrl, key, apiKey),
+    key: normalizedPath,
+    url: await createSignedStorageUrl(normalizedPath, options),
   };
 }

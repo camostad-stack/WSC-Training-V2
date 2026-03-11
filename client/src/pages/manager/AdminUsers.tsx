@@ -11,6 +11,8 @@ import { Loader2, Search, Pencil, Plus } from "lucide-react";
 import { useState, useMemo } from "react";
 import { toast } from "sonner";
 import { departmentLabels } from "@/features/simulator/config";
+import { useLocation } from "wouter";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 const ROLES = [
   { value: "employee", label: "Employee" },
@@ -35,15 +37,17 @@ const roleColors: Record<string, string> = {
 };
 
 export default function AdminUsers() {
+  const [, setLocation] = useLocation();
+  const { refresh } = useAuth();
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<"all" | typeof ROLES[number]["value"]>("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [editUser, setEditUser] = useState<any>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [newUser, setNewUser] = useState({
-    openId: "",
     name: "",
     email: "",
+    password: "",
     role: "employee",
     department: "none",
     managerId: "none",
@@ -68,9 +72,9 @@ export default function AdminUsers() {
       toast.success("User created");
       setCreateOpen(false);
       setNewUser({
-        openId: "",
         name: "",
         email: "",
+        password: "",
         role: "employee",
         department: "none",
         managerId: "none",
@@ -87,6 +91,14 @@ export default function AdminUsers() {
       setEditUser(null);
       usersList.refetch();
       managers.refetch();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  const startImpersonation = trpc.auth.startImpersonation.useMutation({
+    onSuccess: async ({ targetUser }) => {
+      await refresh();
+      setLocation("/");
+      toast.success(`Now viewing the employee experience as ${targetUser.name || targetUser.email || `User #${targetUser.id}`}`);
     },
     onError: (e) => toast.error(e.message),
   });
@@ -207,14 +219,27 @@ export default function AdminUsers() {
                 </Badge>
               </div>
               <div className="col-span-2 flex justify-end">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setEditUser({ ...u })}
-                  className="gap-1 text-xs"
-                >
-                  <Pencil className="h-3 w-3" /> Edit
-                </Button>
+                <div className="flex items-center gap-1">
+                  {["employee", "shift_lead"].includes(u.role) && u.isActive && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => startImpersonation.mutate({ targetUserId: u.id })}
+                      className="gap-1 text-xs"
+                      disabled={startImpersonation.isPending}
+                    >
+                      Test As
+                    </Button>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditUser({ ...u })}
+                    className="gap-1 text-xs"
+                  >
+                    <Pencil className="h-3 w-3" /> Edit
+                  </Button>
+                </div>
               </div>
             </div>
           ))}
@@ -227,15 +252,6 @@ export default function AdminUsers() {
             <DialogTitle>Create User</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            <div>
-              <Label className="text-xs">SSO / OpenID Subject</Label>
-              <Input
-                value={newUser.openId}
-                onChange={(e) => setNewUser({ ...newUser, openId: e.target.value })}
-                placeholder="auth0|123456789"
-                className="bg-background border-border"
-              />
-            </div>
             <div>
               <Label className="text-xs">Full Name</Label>
               <Input
@@ -252,6 +268,16 @@ export default function AdminUsers() {
                 value={newUser.email}
                 onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
                 placeholder="jamie@woodinvillesportsclub.com"
+                className="bg-background border-border"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Temporary Password</Label>
+              <Input
+                type="password"
+                value={newUser.password}
+                onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                placeholder="At least 8 characters"
                 className="bg-background border-border"
               />
             </div>
@@ -325,15 +351,25 @@ export default function AdminUsers() {
             </Button>
             <Button
               onClick={() => {
-                if (!newUser.openId.trim()) {
-                  toast.error("OpenID / SSO subject is required");
+                if (!newUser.name.trim()) {
+                  toast.error("Full name is required");
+                  return;
+                }
+
+                if (!newUser.email.trim()) {
+                  toast.error("Email is required");
+                  return;
+                }
+
+                if (newUser.password.trim().length < 8) {
+                  toast.error("Temporary password must be at least 8 characters");
                   return;
                 }
 
                 createUser.mutate({
-                  openId: newUser.openId.trim(),
-                  name: newUser.name.trim() || undefined,
-                  email: newUser.email.trim() || undefined,
+                  name: newUser.name.trim(),
+                  email: newUser.email.trim(),
+                  password: newUser.password,
                   role: newUser.role as any,
                   department: newUser.department === "none" ? null : (newUser.department as any),
                   managerId: newUser.managerId === "none" ? null : parseInt(newUser.managerId, 10),
@@ -357,6 +393,16 @@ export default function AdminUsers() {
               <DialogTitle>Edit User: {editUser.name || `#${editUser.id}`}</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 py-2">
+              <div>
+                <Label className="text-xs">Email</Label>
+                <Input
+                  type="email"
+                  value={editUser.email || ""}
+                  onChange={(e) => setEditUser({ ...editUser, email: e.target.value })}
+                  placeholder="name@woodinvillesportsclub.com"
+                  className="bg-background border-border"
+                />
+              </div>
               <div>
                 <Label className="text-xs">Role</Label>
                 <Select
@@ -423,6 +469,7 @@ export default function AdminUsers() {
                 onClick={() => {
                   updateUser.mutate({
                     userId: editUser.id,
+                    email: editUser.email?.trim() || undefined,
                     role: editUser.role,
                     department: editUser.department,
                     managerId: editUser.managerId,

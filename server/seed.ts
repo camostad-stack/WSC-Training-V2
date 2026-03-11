@@ -23,6 +23,63 @@ import {
 import { departmentRoles } from "@shared/wsc-content";
 import { closeDb, getDb } from "./db";
 import { WSC_POLICY_DOCUMENT_SEEDS, WSC_SCENARIO_TEMPLATE_SEEDS } from "./wsc-seed-data";
+import { getSupabaseAdmin } from "./_core/supabase";
+import { ENV } from "./_core/env";
+import { storagePut } from "./storage";
+
+async function ensureAuthUser(input: {
+  email: string;
+  name: string;
+  password?: string;
+  isActive?: boolean;
+}) {
+  const { data, error } = await getSupabaseAdmin().auth.admin.listUsers({
+    page: 1,
+    perPage: 200,
+  });
+
+  if (error) {
+    throw new Error(`Failed to list Supabase auth users: ${error.message}`);
+  }
+
+  const existing = data.users.find((user) => user.email?.toLowerCase() === input.email.toLowerCase());
+
+  if (existing) {
+    const { error: updateError } = await getSupabaseAdmin().auth.admin.updateUserById(existing.id, {
+      email: input.email,
+      password: input.password,
+      email_confirm: true,
+      user_metadata: {
+        name: input.name,
+        full_name: input.name,
+      },
+      ban_duration: input.isActive === false ? "876000h" : "none",
+    });
+
+    if (updateError) {
+      throw new Error(`Failed to update Supabase auth user ${input.email}: ${updateError.message}`);
+    }
+
+    return existing.id;
+  }
+
+  const { data: created, error: createError } = await getSupabaseAdmin().auth.admin.createUser({
+    email: input.email,
+    password: input.password ?? ENV.seedUserPassword,
+    email_confirm: true,
+    user_metadata: {
+      name: input.name,
+      full_name: input.name,
+    },
+    ban_duration: input.isActive === false ? "876000h" : "none",
+  });
+
+  if (createError || !created.user) {
+    throw new Error(`Failed to create Supabase auth user ${input.email}: ${createError?.message ?? "unknown error"}`);
+  }
+
+  return created.user.id;
+}
 
 async function ensureUser(input: InsertUser) {
   const db = await getDb();
@@ -43,8 +100,8 @@ async function ensureUser(input: InsertUser) {
     return existing[0].id;
   }
 
-  const result = await db.insert(users).values(input as any);
-  return result[0]?.insertId as number;
+  const result = await db.insert(users).values(input as any).returning({ id: users.id });
+  return result[0]?.id as number;
 }
 
 async function ensureProfile(userId: number, input: Omit<InsertEmployeeProfile, "userId">) {
@@ -57,8 +114,8 @@ async function ensureProfile(userId: number, input: Omit<InsertEmployeeProfile, 
     return existing[0].id;
   }
 
-  const result = await db.insert(employeeProfiles).values({ userId, ...input } as any);
-  return result[0]?.insertId as number;
+  const result = await db.insert(employeeProfiles).values({ userId, ...input } as any).returning({ id: employeeProfiles.id });
+  return result[0]?.id as number;
 }
 
 async function ensureScenario(input: InsertScenarioTemplate) {
@@ -71,8 +128,8 @@ async function ensureScenario(input: InsertScenarioTemplate) {
     return existing[0].id;
   }
 
-  const result = await db.insert(scenarioTemplates).values(input as any);
-  return result[0]?.insertId as number;
+  const result = await db.insert(scenarioTemplates).values(input as any).returning({ id: scenarioTemplates.id });
+  return result[0]?.id as number;
 }
 
 async function ensurePolicy(input: InsertPolicyDocument) {
@@ -85,8 +142,8 @@ async function ensurePolicy(input: InsertPolicyDocument) {
     return existing[0].id;
   }
 
-  const result = await db.insert(policyDocuments).values(input as any);
-  return result[0]?.insertId as number;
+  const result = await db.insert(policyDocuments).values(input as any).returning({ id: policyDocuments.id });
+  return result[0]?.id as number;
 }
 
 async function ensureAssignment(input: InsertAssignment) {
@@ -102,8 +159,8 @@ async function ensureAssignment(input: InsertAssignment) {
     return existing[0].id;
   }
 
-  const result = await db.insert(assignments).values(input as any);
-  return result[0]?.insertId as number;
+  const result = await db.insert(assignments).values(input as any).returning({ id: assignments.id });
+  return result[0]?.id as number;
 }
 
 async function ensureSession(input: InsertSimulationSession) {
@@ -119,8 +176,8 @@ async function ensureSession(input: InsertSimulationSession) {
     return existing[0].id;
   }
 
-  const result = await db.insert(simulationSessions).values(input as any);
-  return result[0]?.insertId as number;
+  const result = await db.insert(simulationSessions).values(input as any).returning({ id: simulationSessions.id });
+  return result[0]?.id as number;
 }
 
 async function ensureSessionMedia(input: InsertSessionMedia) {
@@ -136,8 +193,8 @@ async function ensureSessionMedia(input: InsertSessionMedia) {
     return existing[0].id;
   }
 
-  const result = await db.insert(sessionMedia).values(input as any);
-  return result[0]?.insertId as number;
+  const result = await db.insert(sessionMedia).values(input as any).returning({ id: sessionMedia.id });
+  return result[0]?.id as number;
 }
 
 async function ensureReview(input: InsertManagerReview) {
@@ -153,16 +210,16 @@ async function ensureReview(input: InsertManagerReview) {
     return existing[0].id;
   }
 
-  const result = await db.insert(managerReviews).values(input as any);
-  return result[0]?.insertId as number;
+  const result = await db.insert(managerReviews).values(input as any).returning({ id: managerReviews.id });
+  return result[0]?.id as number;
 }
 
 async function ensureAuditLog(input: InsertAuditLog) {
   const db = await getDb();
   if (!db) throw new Error("DATABASE_URL is required to seed data");
 
-  const result = await db.insert(auditLogs).values(input as any);
-  return result[0]?.insertId as number;
+  const result = await db.insert(auditLogs).values(input as any).returning({ id: auditLogs.id });
+  return result[0]?.id as number;
 }
 
 async function seed() {
@@ -173,73 +230,117 @@ async function seed() {
 
   console.log("Seeding Woodinville Sports Club MVP data...");
 
+  const seedPassword = ENV.seedUserPassword;
+
+  const superAdminAuthId = await ensureAuthUser({
+    email: "alex.mercer@woodinvillesportsclub.local",
+    name: "Alex Mercer",
+    password: seedPassword,
+    isActive: true,
+  });
+
   const superAdminId = await ensureUser({
-    openId: "seed-super-admin",
+    openId: superAdminAuthId,
     name: "Alex Mercer",
     email: "alex.mercer@woodinvillesportsclub.local",
     role: "super_admin",
     department: null,
     isActive: true,
-    loginMethod: "manual_admin",
+    loginMethod: "supabase_email",
     lastSignedIn: new Date(),
   });
 
+  const managerAuthId = await ensureAuthUser({
+    email: "dana.porter@woodinvillesportsclub.local",
+    name: "Dana Porter",
+    password: seedPassword,
+    isActive: true,
+  });
+
   const managerId = await ensureUser({
-    openId: "seed-manager-operations",
+    openId: managerAuthId,
     name: "Dana Porter",
     email: "dana.porter@woodinvillesportsclub.local",
     role: "manager",
     department: "customer_service",
     isActive: true,
-    loginMethod: "manual_admin",
+    loginMethod: "supabase_email",
     lastSignedIn: new Date(),
   });
 
+  const shiftLeadAuthId = await ensureAuthUser({
+    email: "taylor.chen@woodinvillesportsclub.local",
+    name: "Taylor Chen",
+    password: seedPassword,
+    isActive: true,
+  });
+
   const shiftLeadId = await ensureUser({
-    openId: "seed-shiftlead-frontdesk",
+    openId: shiftLeadAuthId,
     name: "Taylor Chen",
     email: "taylor.chen@woodinvillesportsclub.local",
     role: "shift_lead",
     department: "customer_service",
     managerId,
     isActive: true,
-    loginMethod: "manual_admin",
+    loginMethod: "supabase_email",
     lastSignedIn: new Date(),
   });
 
+  const jamieAuthId = await ensureAuthUser({
+    email: "jamie.alvarez@woodinvillesportsclub.local",
+    name: "Jamie Alvarez",
+    password: seedPassword,
+    isActive: true,
+  });
+
   const jamieId = await ensureUser({
-    openId: "seed-employee-jamie-frontdesk",
+    openId: jamieAuthId,
     name: "Jamie Alvarez",
     email: "jamie.alvarez@woodinvillesportsclub.local",
     role: "employee",
     department: "customer_service",
     managerId,
     isActive: true,
-    loginMethod: "manual_admin",
+    loginMethod: "supabase_email",
     lastSignedIn: new Date(),
   });
 
+  const rileyAuthId = await ensureAuthUser({
+    email: "riley.morgan@woodinvillesportsclub.local",
+    name: "Riley Morgan",
+    password: seedPassword,
+    isActive: true,
+  });
+
   const rileyId = await ensureUser({
-    openId: "seed-employee-riley-golf",
+    openId: rileyAuthId,
     name: "Riley Morgan",
     email: "riley.morgan@woodinvillesportsclub.local",
     role: "employee",
     department: "golf",
     managerId,
     isActive: true,
-    loginMethod: "manual_admin",
+    loginMethod: "supabase_email",
     lastSignedIn: new Date(),
   });
 
+  const caseyAuthId = await ensureAuthUser({
+    email: "casey.bennett@woodinvillesportsclub.local",
+    name: "Casey Bennett",
+    password: seedPassword,
+    isActive: true,
+  });
+
   const caseyId = await ensureUser({
-    openId: "seed-employee-casey-mod",
+    openId: caseyAuthId,
     name: "Casey Bennett",
     email: "casey.bennett@woodinvillesportsclub.local",
     role: "employee",
     department: "mod_emergency",
     managerId,
     isActive: true,
-    loginMethod: "manual_admin",
+    loginMethod: "supabase_email",
     lastSignedIn: new Date(),
   });
 
@@ -694,26 +795,38 @@ async function seed() {
     completedAt: new Date(),
   });
 
+  const jamieReplay = await storagePut(
+    "seed/frontdesk-billing-review.txt",
+    "Front desk replay placeholder for billing confusion review.\nUse the transcript and scored result tabs for the full coaching context.",
+    "text/plain",
+    "session-media",
+  );
+
   await ensureSessionMedia({
     sessionId: jamieSessionId,
     userId: jamieId,
-    mediaType: "video",
-    storageUrl: "https://example.com/wsc/frontdesk-billing-review.mp4",
-    storageKey: "wsc/frontdesk-billing-review.mp4",
-    mimeType: "video/mp4",
-    fileSizeBytes: 11400000,
-    durationSeconds: 96,
+    mediaType: "transcript_file",
+    storageUrl: jamieReplay.url,
+    storageKey: jamieReplay.key,
+    mimeType: "text/plain",
+    fileSizeBytes: 118,
   });
+
+  const caseyReplay = await storagePut(
+    "seed/mod-emergency-response.txt",
+    "MOD emergency response replay placeholder.\nAudio was not bundled with the seed. Review the live transcript, timing markers, and evaluation instead.",
+    "text/plain",
+    "session-media",
+  );
 
   await ensureSessionMedia({
     sessionId: caseySessionId,
     userId: caseyId,
-    mediaType: "audio",
-    storageUrl: "https://example.com/wsc/mod-emergency-response.mp3",
-    storageKey: "wsc/mod-emergency-response.mp3",
-    mimeType: "audio/mpeg",
-    fileSizeBytes: 3800000,
-    durationSeconds: 84,
+    mediaType: "transcript_file",
+    storageUrl: caseyReplay.url,
+    storageKey: caseyReplay.key,
+    mimeType: "text/plain",
+    fileSizeBytes: 133,
   });
 
   await ensureReview({
@@ -777,6 +890,7 @@ async function seed() {
   console.log(`Scenarios: ${WSC_SCENARIO_TEMPLATE_SEEDS.length}`);
   console.log(`Sessions: ${[jamieSessionId, rileySessionId, caseySessionId].length}`);
   console.log(`Assignments: ${[jamieAssignmentId, rileyAssignmentId, caseyAssignmentId].length}`);
+  console.log(`Seed sign-in password: ${seedPassword}`);
 }
 
 seed()

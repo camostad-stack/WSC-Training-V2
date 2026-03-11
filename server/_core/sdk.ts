@@ -1,336 +1,99 @@
-import { AXIOS_TIMEOUT_MS, COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import { ForbiddenError } from "@shared/_core/errors";
-import axios, { type AxiosInstance } from "axios";
-import { parse as parseCookieHeader } from "cookie";
 import type { Request } from "express";
-import { SignJWT, jwtVerify } from "jose";
+import { parse } from "cookie";
 import type { User } from "../../drizzle/schema";
 import * as db from "../db";
 import { ENV } from "./env";
-import type {
-  ExchangeTokenRequest,
-  ExchangeTokenResponse,
-  GetUserInfoResponse,
-  GetUserInfoWithJwtRequest,
-  GetUserInfoWithJwtResponse,
-} from "./types/manusTypes";
-// Utility function
-const isNonEmptyString = (value: unknown): value is string =>
-  typeof value === "string" && value.length > 0;
+import { getSupabaseAdmin } from "./supabase";
 
-export type SessionPayload = {
-  openId: string;
-  appId: string;
-  name: string;
+export const IMPERSONATION_COOKIE_NAME = "wsc_impersonation_user";
+
+export type ImpersonationState = {
+  targetUserId: number;
 };
 
-function getLocalFallbackRole(openId: string): User["role"] | null {
-  if (!openId.startsWith("local:")) return null;
-  const [, role] = openId.split(":");
-  if (role === "employee" || role === "shift_lead" || role === "manager" || role === "admin" || role === "super_admin") {
-    return role;
-  }
-  return null;
+function getBearerToken(req: Request): string | null {
+  const header = req.headers.authorization;
+  if (typeof header !== "string") return null;
+  if (!header.startsWith("Bearer ")) return null;
+  const token = header.slice("Bearer ".length).trim();
+  return token.length > 0 ? token : null;
 }
 
-function buildLocalFallbackUser(openId: string, name: string): User | null {
-  const role = getLocalFallbackRole(openId);
-  if (!role) return null;
-
-  const now = new Date();
-  const idByRole: Record<User["role"], number> = {
-    employee: 1001,
-    shift_lead: 1002,
-    manager: 1003,
-    admin: 1004,
-    super_admin: 1005,
-  };
-
-  return {
-    id: idByRole[role],
-    openId,
-    name,
-    email: `${role}@local.wsc`,
-    loginMethod: "local_dev",
-    role,
-    department: role === "employee" || role === "shift_lead" ? "customer_service" : null,
-    managerId: role === "employee" || role === "shift_lead" ? idByRole.manager : null,
-    isActive: true,
-    createdAt: now,
-    updatedAt: now,
-    lastSignedIn: now,
-  };
+function deriveLoginMethod(provider?: string | null) {
+  if (!provider) return "email";
+  return provider;
 }
 
-const EXCHANGE_TOKEN_PATH = `/webdev.v1.WebDevAuthPublicService/ExchangeToken`;
-const GET_USER_INFO_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInfo`;
-const GET_USER_INFO_WITH_JWT_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInfoWithJwt`;
-
-class OAuthService {
-  constructor(private client: ReturnType<typeof axios.create>) {
-    console.log("[OAuth] Initialized with baseURL:", ENV.oAuthServerUrl);
-    if (!ENV.oAuthServerUrl) {
-      console.error(
-        "[OAuth] ERROR: OAUTH_SERVER_URL is not configured! Set OAUTH_SERVER_URL environment variable."
-      );
-    }
-  }
-
-  private decodeState(state: string): string {
-    const redirectUri = atob(state);
-    return redirectUri;
-  }
-
-  async getTokenByCode(
-    code: string,
-    state: string
-  ): Promise<ExchangeTokenResponse> {
-    const payload: ExchangeTokenRequest = {
-      clientId: ENV.appId,
-      grantType: "authorization_code",
-      code,
-      redirectUri: this.decodeState(state),
-    };
-
-    const { data } = await this.client.post<ExchangeTokenResponse>(
-      EXCHANGE_TOKEN_PATH,
-      payload
-    );
-
-    return data;
-  }
-
-  async getUserInfoByToken(
-    token: ExchangeTokenResponse
-  ): Promise<GetUserInfoResponse> {
-    const { data } = await this.client.post<GetUserInfoResponse>(
-      GET_USER_INFO_PATH,
-      {
-        accessToken: token.accessToken,
-      }
-    );
-
-    return data;
-  }
+function deriveDisplayName(authUser: {
+  email?: string | null;
+  user_metadata?: Record<string, unknown> | null;
+}) {
+  const metadata = authUser.user_metadata ?? {};
+  const fullName = typeof metadata.full_name === "string" ? metadata.full_name : null;
+  const name = typeof metadata.name === "string" ? metadata.name : null;
+  if (fullName) return fullName;
+  if (name) return name;
+  if (authUser.email) return authUser.email.split("@")[0];
+  return "WSC User";
 }
 
-const createOAuthHttpClient = (): AxiosInstance =>
-  axios.create({
-    baseURL: ENV.oAuthServerUrl,
-    timeout: AXIOS_TIMEOUT_MS,
+function getCookieValue(req: Request, name: string) {
+  const raw = req.headers.cookie;
+  if (!raw) return null;
+  const cookies = parse(raw);
+  const value = cookies[name];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+async function ensureAppUser(authUser: {
+  id: string;
+  email?: string | null;
+  app_metadata?: Record<string, unknown> | null;
+  user_metadata?: Record<string, unknown> | null;
+  last_sign_in_at?: string | null;
+}) {
+  const provider = typeof authUser.app_metadata?.provider === "string"
+    ? authUser.app_metadata.provider
+    : null;
+
+  await db.upsertUser({
+    openId: authUser.id,
+    name: deriveDisplayName(authUser),
+    email: authUser.email ?? null,
+    loginMethod: deriveLoginMethod(provider),
+    role: authUser.id === ENV.ownerOpenId ? "admin" : undefined,
+    lastSignedIn: authUser.last_sign_in_at ? new Date(authUser.last_sign_in_at) : new Date(),
   });
 
+  return await db.getUserByOpenId(authUser.id);
+}
+
 class SDKServer {
-  private readonly client: AxiosInstance;
-  private readonly oauthService: OAuthService;
-
-  constructor(client: AxiosInstance = createOAuthHttpClient()) {
-    this.client = client;
-    this.oauthService = new OAuthService(this.client);
-  }
-
-  private deriveLoginMethod(
-    platforms: unknown,
-    fallback: string | null | undefined
-  ): string | null {
-    if (fallback && fallback.length > 0) return fallback;
-    if (!Array.isArray(platforms) || platforms.length === 0) return null;
-    const set = new Set<string>(
-      platforms.filter((p): p is string => typeof p === "string")
-    );
-    if (set.has("REGISTERED_PLATFORM_EMAIL")) return "email";
-    if (set.has("REGISTERED_PLATFORM_GOOGLE")) return "google";
-    if (set.has("REGISTERED_PLATFORM_APPLE")) return "apple";
-    if (
-      set.has("REGISTERED_PLATFORM_MICROSOFT") ||
-      set.has("REGISTERED_PLATFORM_AZURE")
-    )
-      return "microsoft";
-    if (set.has("REGISTERED_PLATFORM_GITHUB")) return "github";
-    const first = Array.from(set)[0];
-    return first ? first.toLowerCase() : null;
-  }
-
-  /**
-   * Exchange OAuth authorization code for access token
-   * @example
-   * const tokenResponse = await sdk.exchangeCodeForToken(code, state);
-   */
-  async exchangeCodeForToken(
-    code: string,
-    state: string
-  ): Promise<ExchangeTokenResponse> {
-    return this.oauthService.getTokenByCode(code, state);
-  }
-
-  /**
-   * Get user information using access token
-   * @example
-   * const userInfo = await sdk.getUserInfo(tokenResponse.accessToken);
-   */
-  async getUserInfo(accessToken: string): Promise<GetUserInfoResponse> {
-    const data = await this.oauthService.getUserInfoByToken({
-      accessToken,
-    } as ExchangeTokenResponse);
-    const loginMethod = this.deriveLoginMethod(
-      (data as any)?.platforms,
-      (data as any)?.platform ?? data.platform ?? null
-    );
-    return {
-      ...(data as any),
-      platform: loginMethod,
-      loginMethod,
-    } as GetUserInfoResponse;
-  }
-
-  private parseCookies(cookieHeader: string | undefined) {
-    if (!cookieHeader) {
-      return new Map<string, string>();
-    }
-
-    const parsed = parseCookieHeader(cookieHeader);
-    return new Map(Object.entries(parsed));
-  }
-
-  private getSessionSecret() {
-    const secret = ENV.cookieSecret || "local-dev-session-secret";
-    return new TextEncoder().encode(secret);
-  }
-
-  /**
-   * Create a session token for a Manus user openId
-   * @example
-   * const sessionToken = await sdk.createSessionToken(userInfo.openId);
-   */
-  async createSessionToken(
-    openId: string,
-    options: { expiresInMs?: number; name?: string } = {}
-  ): Promise<string> {
-    return this.signSession(
-      {
-        openId,
-        appId: ENV.appId,
-        name: options.name || "",
-      },
-      options
-    );
-  }
-
-  async signSession(
-    payload: SessionPayload,
-    options: { expiresInMs?: number } = {}
-  ): Promise<string> {
-    const issuedAt = Date.now();
-    const expiresInMs = options.expiresInMs ?? ONE_YEAR_MS;
-    const expirationSeconds = Math.floor((issuedAt + expiresInMs) / 1000);
-    const secretKey = this.getSessionSecret();
-
-    return new SignJWT({
-      openId: payload.openId,
-      appId: payload.appId,
-      name: payload.name,
-    })
-      .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-      .setExpirationTime(expirationSeconds)
-      .sign(secretKey);
-  }
-
-  async verifySession(
-    cookieValue: string | undefined | null
-  ): Promise<{ openId: string; appId: string; name: string } | null> {
-    if (!cookieValue) {
-      console.warn("[Auth] Missing session cookie");
-      return null;
-    }
-
-    try {
-      const secretKey = this.getSessionSecret();
-      const { payload } = await jwtVerify(cookieValue, secretKey, {
-        algorithms: ["HS256"],
-      });
-      const { openId, appId, name } = payload as Record<string, unknown>;
-
-      if (
-        !isNonEmptyString(openId) ||
-        !isNonEmptyString(appId) ||
-        !isNonEmptyString(name)
-      ) {
-        console.warn("[Auth] Session payload missing required fields");
-        return null;
-      }
-
-      return {
-        openId,
-        appId,
-        name,
-      };
-    } catch (error) {
-      console.warn("[Auth] Session verification failed", String(error));
-      return null;
-    }
-  }
-
-  async getUserInfoWithJwt(
-    jwtToken: string
-  ): Promise<GetUserInfoWithJwtResponse> {
-    const payload: GetUserInfoWithJwtRequest = {
-      jwtToken,
-      projectId: ENV.appId,
-    };
-
-    const { data } = await this.client.post<GetUserInfoWithJwtResponse>(
-      GET_USER_INFO_WITH_JWT_PATH,
-      payload
-    );
-
-    const loginMethod = this.deriveLoginMethod(
-      (data as any)?.platforms,
-      (data as any)?.platform ?? data.platform ?? null
-    );
-    return {
-      ...(data as any),
-      platform: loginMethod,
-      loginMethod,
-    } as GetUserInfoWithJwtResponse;
-  }
-
   async authenticateRequest(req: Request): Promise<User> {
-    // Regular authentication flow
-    const cookies = this.parseCookies(req.headers.cookie);
-    const sessionCookie = cookies.get(COOKIE_NAME);
-    const session = await this.verifySession(sessionCookie);
+    const accessToken = getBearerToken(req);
 
-    if (!session) {
-      throw ForbiddenError("Invalid session cookie");
+    if (!accessToken) {
+      throw ForbiddenError("Missing Supabase access token");
     }
 
-    const sessionUserId = session.openId;
-    const signedInAt = new Date();
-    let user = await db.getUserByOpenId(sessionUserId);
+    const { data, error } = await getSupabaseAdmin().auth.getUser(accessToken);
+    if (error || !data.user) {
+      throw ForbiddenError("Invalid Supabase session");
+    }
 
-    // If user not in DB, sync from OAuth server automatically
+    let user = await db.getUserByOpenId(data.user.id);
     if (!user) {
-      if (!process.env.DATABASE_URL) {
-        const fallbackUser = buildLocalFallbackUser(session.openId, session.name);
-        if (fallbackUser) {
-          return fallbackUser;
-        }
-      }
-
-      try {
-        const userInfo = await this.getUserInfoWithJwt(sessionCookie ?? "");
-        await db.upsertUser({
-          openId: userInfo.openId,
-          name: userInfo.name || null,
-          email: userInfo.email ?? null,
-          loginMethod: userInfo.loginMethod ?? userInfo.platform ?? null,
-          lastSignedIn: signedInAt,
-        });
-        user = await db.getUserByOpenId(userInfo.openId);
-      } catch (error) {
-        console.error("[Auth] Failed to sync user from OAuth:", error);
-        throw ForbiddenError("Failed to sync user info");
-      }
+      user = await ensureAppUser(data.user);
+    } else {
+      await db.upsertUser({
+        openId: data.user.id,
+        name: deriveDisplayName(data.user),
+        email: data.user.email ?? null,
+        loginMethod: deriveLoginMethod(typeof data.user.app_metadata?.provider === "string" ? data.user.app_metadata.provider : null),
+        lastSignedIn: new Date(),
+      });
+      user = await db.getUserByOpenId(data.user.id);
     }
 
     if (!user) {
@@ -341,12 +104,30 @@ class SDKServer {
       throw ForbiddenError("User account is inactive");
     }
 
-    await db.upsertUser({
-      openId: user.openId,
-      lastSignedIn: signedInAt,
-    });
-
     return user;
+  }
+
+  async resolveEffectiveUser(req: Request, actorUser: User): Promise<{ user: User; impersonation: ImpersonationState | null }> {
+    if (!["admin", "super_admin"].includes(actorUser.role)) {
+      return { user: actorUser, impersonation: null };
+    }
+
+    const rawTargetUserId = getCookieValue(req, IMPERSONATION_COOKIE_NAME);
+    const targetUserId = Number.parseInt(rawTargetUserId || "", 10);
+
+    if (!Number.isFinite(targetUserId) || targetUserId <= 0 || targetUserId === actorUser.id) {
+      return { user: actorUser, impersonation: null };
+    }
+
+    const targetUser = await db.getUserById(targetUserId);
+    if (!targetUser || !targetUser.isActive) {
+      return { user: actorUser, impersonation: null };
+    }
+
+    return {
+      user: targetUser,
+      impersonation: { targetUserId },
+    };
   }
 }
 

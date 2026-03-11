@@ -23,6 +23,11 @@ Rules:
 - Keep scenarios trainable in under 5 conversational turns.
 - Difficulty should affect emotional intensity, ambiguity, and amount of pushback.
 - Emergency scenarios should prioritize safety, urgency, and escalation.
+- Every scenario must have one clear operational goal that both sides are implicitly working around.
+- The customer's reactions should change based on whether the employee is moving that real goal forward.
+- Build customers as human beings with a real concern, not as hostility generators.
+- Prefer grounded emotional states such as concerned, rushed, protective, disappointed, skeptical, or alarmed over cartoonish anger.
+- Once the employee acknowledges the issue and gives a credible next step, reduce emotional resistance and move the scenario forward.
 - Scenarios must allow both successful and unsuccessful paths.
 Return JSON only matching the exact schema requested. Do not include any markdown formatting or code blocks.`;
 
@@ -35,11 +40,16 @@ Your emotional state must update based on the employee's actual behavior.
 Rules:
 - You are a customer, not a trainer.
 - Your reply must reflect the scenario branch logic.
-- You may become calmer, more frustrated, more skeptical, or relieved.
+- React like a real person trying to get help, clarity, safety, or reassurance.
+- Keep the real situation goal in mind: what is this person actually trying to get from the employee right now?
+- Change your reply when the employee meaningfully advances that goal. Do not just repeat the same concern with different wording.
+- Do not repeat the same frustration in a loop once the employee has acknowledged the concern and taken ownership.
+- In safety or emergency scenarios, shift quickly toward factual urgency and clear direction instead of ongoing emotional venting.
+- You may become calmer, more skeptical, more reassured, more concerned, or relieved depending on what the employee actually does.
 - Keep replies natural and conversational.
 - Each reply should be 1-3 spoken sentences.
 - End the interaction once the issue is clearly resolved, correctly escalated, or unrecoverably mishandled.
-- Do not resolve too easily.
+- Do not resolve too easily, but do allow relief when the employee is clearly helping.
 Return JSON only matching the exact schema requested. Do not include any markdown formatting or code blocks.`;
 
 // ─── Prompt 3: Conversation State Manager ───
@@ -48,6 +58,7 @@ Update the internal scenario state after each employee response.
 Track:
 - customer emotion
 - trust trend
+- whether the operational goal is moving forward
 - whether empathy has been demonstrated
 - whether issue clarity has improved
 - whether the employee is avoiding the issue
@@ -90,7 +101,13 @@ Scoring rules:
 - Penalize failure to take ownership.
 - Penalize incorrect policy statements.
 - Penalize weak escalation in safety-sensitive scenarios.
-- Reward clarity, empathy, ownership, and correct next steps.
+- Reward clarity, empathy, calm control, dignity, ownership, and correct next steps.
+- Ask whether the employee moved the actual situation toward resolution, control, or a clean next step.
+- Do not confuse "not overly emotional" with poor handling; practical human reassurance counts when it fits the scenario.
+- Apply the scoring lens to the actual situation:
+  - Emergency response: ownership, problem solving, scene control, escalation judgment, and stabilizing until care arrives matter more than polished policy language.
+  - Golf / sales-service: opening warmth, discovery, value clarity, and closing control matter more than manager escalation.
+  - Front desk service recovery: calm acknowledgment, ownership, clarity, and a clean next step matter most.
 - Do not over-score average performance.
 Return JSON only matching the exact schema requested. Do not include any markdown formatting or code blocks.`;
 
@@ -100,6 +117,11 @@ Create direct, practical coaching based on the evaluation.
 Use plain operational language a manager would actually use on the floor.
 No hype, no filler, no generic praise, and no repeated score summary.
 Tell the employee exactly what to say, do, stop doing, and repeat next time.
+Coach toward a humanistic service style: calm acknowledgment, practical ownership, and emotionally steady language.
+- Match the coaching to the scenario:
+  - Emergency response: stabilize until care arrives, take control, state the next action.
+  - Golf / sales-service: stronger opening warmth, cleaner discovery, firmer close.
+  - Front desk recovery: acknowledge, own, clarify, close the loop.
 Prefer short coaching bullets over abstract feedback.
 Return JSON only matching the exact schema requested. Do not include any markdown formatting or code blocks.`;
 

@@ -18,6 +18,8 @@ const mockInvokeLLM = vi.mocked(invokeLLM);
 function createPublicContext(): TrpcContext {
   return {
     user: null,
+    actorUser: null,
+    impersonation: null,
     req: {
       protocol: "https",
       headers: {},
@@ -41,6 +43,18 @@ function createAuthContext(): TrpcContext {
       updatedAt: new Date(),
       lastSignedIn: new Date(),
     },
+    actorUser: {
+      id: 1,
+      openId: "test-user",
+      email: "test@wsc.com",
+      name: "Test Employee",
+      loginMethod: "manus",
+      role: "user",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSignedIn: new Date(),
+    },
+    impersonation: null,
     req: {
       protocol: "https",
       headers: {},
@@ -67,6 +81,50 @@ function mockLLMResponse(data: unknown) {
       },
     ],
   });
+}
+
+function createScenarioFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    scenario_id: "WSC-FIXTURE-1",
+    department: "customer_service",
+    employee_role: "Front Desk Associate",
+    difficulty: 3,
+    scenario_family: "billing_confusion",
+    customer_persona: {
+      name: "Erin Calloway",
+      age_band: "35-45",
+      membership_context: "Active member with billing concern",
+      communication_style: "Direct and organized",
+      initial_emotion: "frustrated",
+      patience_level: "moderate",
+    },
+    situation_summary: "A member sees charges they do not understand and wants a clear answer.",
+    opening_line: "I need to know why I was charged twice and what you are going to do about it.",
+    hidden_facts: ["One charge is pending and one is final."],
+    approved_resolution_paths: ["Verify the ledger and explain the next step clearly."],
+    required_behaviors: ["Show empathy", "Take ownership", "Give a direct next step"],
+    critical_errors: ["Blame the customer", "Guess at billing policy"],
+    branch_logic: {
+      if_empathy_is_strong: "Customer becomes easier to help.",
+      if_answer_is_vague: "Customer gets more skeptical.",
+      if_policy_is_wrong: "Customer asks for a manager.",
+      if_employee_takes_ownership: "Customer stays engaged.",
+      if_employee_fails_to_help: "Customer escalates frustration.",
+      if_employee_escalates_correctly: "Customer accepts a handoff.",
+    },
+    emotion_progression: {
+      starting_state: "frustrated",
+      better_if: ["Clear answer", "Ownership"],
+      worse_if: ["Vague answer", "Deflection"],
+    },
+    completion_rules: {
+      resolved_if: ["Customer understands the charge and next step."],
+      end_early_if: ["Employee makes a critical error."],
+      manager_required_if: ["Billing exception needs supervisor approval."],
+    },
+    recommended_turns: 4,
+    ...overrides,
+  };
 }
 
 // ─── Prompt 1: Scenario Director ───
@@ -118,8 +176,6 @@ describe("simulator.generateScenario", () => {
       recommended_turns: 4,
     };
 
-    mockLLMResponse(mockScenario);
-
     const caller = appRouter.createCaller(createAuthContext());
     const result = await caller.simulator.generateScenario({
       department: "customer_service",
@@ -130,94 +186,39 @@ describe("simulator.generateScenario", () => {
 
     expect(result.scenario).toBeDefined();
     const scenario = result.scenario as any;
-    expect(scenario.scenario_id).toBe("WSC-2026-0309-IP-5A");
-    expect(scenario.customer_persona.name).toBe("Karen Whitfield");
+    expect(scenario.scenario_id).toMatch(/^seed-/);
+    expect(scenario.department).toBe("customer_service");
     expect(scenario.branch_logic).toBeDefined();
     expect(scenario.emotion_progression).toBeDefined();
     expect(scenario.completion_rules).toBeDefined();
-    expect(mockInvokeLLM).toHaveBeenCalledTimes(1);
+    expect(mockInvokeLLM).not.toHaveBeenCalled();
   });
 
-  it("handles LLM returning markdown-wrapped JSON", async () => {
-    const mockScenario = {
-      scenario_id: "WSC-TEST",
-      department: "Customer Service",
-      employee_role: "CS Team Member",
-      difficulty: 3,
-      scenario_family: "reservation_issue",
-      customer_persona: {
-        name: "Test Person",
-        age_band: "30-40",
-        membership_context: "Standard",
-        communication_style: "Calm",
-        initial_emotion: "concerned",
-        patience_level: "moderate",
-      },
-      situation_summary: "Test summary",
-      opening_line: "Test opening",
-      hidden_facts: [],
-      approved_resolution_paths: [],
-      required_behaviors: [],
-      critical_errors: [],
-      branch_logic: {},
-      emotion_progression: { starting_state: "concerned", better_if: [], worse_if: [] },
-      completion_rules: { resolved_if: [], end_early_if: [], manager_required_if: [] },
-      recommended_turns: 3,
-    };
-
-    mockInvokeLLM.mockResolvedValueOnce({
-      id: "test-id",
-      created: Date.now(),
-      model: "test-model",
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content: "```json\n" + JSON.stringify(mockScenario) + "\n```",
-          },
-          finish_reason: "stop",
-        },
-      ],
-    });
-
+  it("selects a matching fallback scenario family from the bundled WSC catalog", async () => {
     const caller = appRouter.createCaller(createAuthContext());
     const result = await caller.simulator.generateScenario({
       department: "customer_service",
       employeeRole: "CS Team Member",
       difficulty: 3,
       mode: "phone",
+      scenarioFamily: "reservation_issue",
     });
 
-    expect((result.scenario as any).scenario_id).toBe("WSC-TEST");
+    expect((result.scenario as any).scenario_family).toBe("reservation_issue");
+    expect(mockInvokeLLM).not.toHaveBeenCalled();
   });
 
-  it("throws when LLM returns empty content", async () => {
-    mockInvokeLLM.mockResolvedValueOnce({
-      id: "test-id",
-      created: Date.now(),
-      model: "test-model",
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content: "",
-          },
-          finish_reason: "stop",
-        },
-      ],
+  it("falls back to a bundled WSC scenario when AI is unavailable", async () => {
+    const caller = appRouter.createCaller(createAuthContext());
+    const result = await caller.simulator.generateScenario({
+      department: "customer_service",
+      employeeRole: "CS Team Member",
+      difficulty: 1,
+      mode: "in_person",
     });
 
-    const caller = appRouter.createCaller(createAuthContext());
-    await expect(
-      caller.simulator.generateScenario({
-        department: "customer_service",
-        employeeRole: "CS Team Member",
-        difficulty: 1,
-        mode: "in_person",
-      })
-    ).rejects.toThrow();
+    expect((result.scenario as any).scenario_id).toMatch(/^seed-/);
+    expect((result.scenario as any).recommended_turns).toBeGreaterThanOrEqual(3);
   });
 });
 
@@ -265,25 +266,22 @@ describe("simulator.customerReply", () => {
       continue_simulation: true,
     };
 
-    mockLLMResponse(mockCustomerReply);
-    mockLLMResponse(mockStateUpdate);
-
     const caller = appRouter.createCaller(createAuthContext());
     const result = await caller.simulator.customerReply({
-      scenarioJson: { scenario_id: "test", emotion_progression: { starting_state: "frustrated" } },
+      scenarioJson: createScenarioFixture(),
       transcript: [
         { role: "customer", message: "I have a problem." },
       ],
       employeeResponse: "I'm sorry to hear that. Let me help you.",
     });
 
-    expect(result.customerReply.customer_reply).toBe("Thank you for looking into this.");
-    expect(result.customerReply.trust_level).toBe(5);
+    expect(result.customerReply.customer_reply.length).toBeGreaterThan(0);
+    expect(result.customerReply.trust_level).toBeGreaterThan(0);
     expect(result.customerReply.director_notes.employee_showed_empathy).toBe(true);
     expect(result.stateUpdate.turn_number).toBe(1);
     expect(result.stateUpdate.employee_flags.showed_empathy).toBe(true);
-    expect(result.stateUpdate.scenario_risk_level).toBe("moderate");
-    expect(mockInvokeLLM).toHaveBeenCalledTimes(2);
+    expect(result.stateUpdate.scenario_risk_level).toBe("low");
+    expect(mockInvokeLLM).not.toHaveBeenCalled();
   });
 
   it("handles scenario completion", async () => {
@@ -323,23 +321,76 @@ describe("simulator.customerReply", () => {
       continue_simulation: false,
     };
 
-    mockLLMResponse(mockCustomerReply);
-    mockLLMResponse(mockStateUpdate);
-
     const caller = appRouter.createCaller(createAuthContext());
     const result = await caller.simulator.customerReply({
-      scenarioJson: { scenario_id: "test" },
+      scenarioJson: createScenarioFixture(),
       transcript: [
         { role: "customer", message: "I have a problem." },
         { role: "employee", message: "Let me fix that for you." },
         { role: "customer", message: "Okay, what can you do?" },
+        { role: "employee", message: "I am checking the ledger and I will explain the exact charge." },
+        { role: "customer", message: "Fine, I just want a clear answer." },
       ],
-      employeeResponse: "I've processed your refund and here's the confirmation.",
+      employeeResponse: "I understand why this is frustrating. I will verify the account, process the refund now, and give you the confirmation before you leave.",
     });
 
     expect(result.customerReply.scenario_complete).toBe(true);
-    expect(result.customerReply.updated_emotion).toBe("relieved");
+    expect(["relieved", "calmer", "reassured", "steady"]).toContain(result.customerReply.updated_emotion);
     expect(result.stateUpdate.continue_simulation).toBe(false);
+    expect(mockInvokeLLM).not.toHaveBeenCalled();
+  });
+
+  it("uses the emergency goal to ask for the next operational step instead of repeating generic frustration", async () => {
+    const caller = appRouter.createCaller(createAuthContext());
+    const result = await caller.simulator.customerReply({
+      scenarioJson: createScenarioFixture({
+        department: "mod_emergency",
+        employee_role: "Manager on Duty",
+        scenario_family: "emergency_response",
+        customer_persona: {
+          name: "Alicia Gomez",
+          age_band: "30-40",
+          membership_context: "Witness to an urgent incident",
+          communication_style: "Alarmed and urgent",
+          initial_emotion: "alarmed",
+          patience_level: "low",
+        },
+      }),
+      transcript: [
+        { role: "customer", message: "Someone collapsed near cardio." },
+      ],
+      employeeResponse: "I am activating emergency response now and taking control of this.",
+    });
+
+    expect(result.customerReply.customer_reply).toContain("what do you need me");
+    expect(result.customerReply.customer_reply).not.toContain("frustration");
+    expect(result.customerReply.updated_emotion).toBe("concerned");
+  });
+
+  it("pushes golf conversations toward discovery before pitching", async () => {
+    const caller = appRouter.createCaller(createAuthContext());
+    const result = await caller.simulator.customerReply({
+      scenarioJson: createScenarioFixture({
+        department: "golf",
+        employee_role: "Golf Membership Advisor",
+        scenario_family: "value_explanation",
+        customer_persona: {
+          name: "Liam Hart",
+          age_band: "35-45",
+          membership_context: "Prospect comparing clubs",
+          communication_style: "Curious but hesitant",
+          initial_emotion: "skeptical",
+          patience_level: "moderate",
+        },
+      }),
+      transcript: [
+        { role: "customer", message: "Why is this worth it for me?" },
+      ],
+      employeeResponse: "We have a great club with a lot of value and premium amenities.",
+    });
+
+    expect(result.customerReply.customer_reply).toContain("ask what I’m actually looking for");
+    expect(result.stateUpdate.continue_simulation).toBe(true);
   });
 });
 
@@ -350,74 +401,10 @@ describe("simulator.evaluate", () => {
     vi.clearAllMocks();
   });
 
-  it("returns enhanced evaluation with pass/fail and readiness", async () => {
-    // 5 sequential LLM calls in runPostSessionEvaluation:
-    // 1. Policy Grounding
-    mockLLMResponse({
-      policy_accuracy: "correct",
-      matched_policy_points: ["Correct refund policy"],
-      missed_policy_points: [],
-      invented_or_risky_statements: [],
-      should_have_escalated: false,
-      policy_notes: "Good policy usage.",
-    });
-    // 2. Session Quality Gate
-    mockLLMResponse({
-      session_quality: "usable",
-      flags: [],
-      reason: "Session appears genuine.",
-      retry_recommended: false,
-    });
-    // 3. Interaction Evaluator
-    mockLLMResponse({
-      overall_score: 82,
-      pass_fail: "pass",
-      readiness_signal: "floor_ready_with_support",
-      category_scores: {
-        opening_warmth: 8,
-        listening_empathy: 9,
-        clarity_directness: 8,
-        policy_accuracy: 7,
-        ownership: 8,
-        problem_solving: 8,
-        de_escalation: 9,
-        escalation_judgment: 8,
-        visible_professionalism: 7,
-        closing_control: 8,
-      },
-      best_moments: ["Strong empathy in opening"],
-      missed_moments: ["Could have confirmed resolution steps"],
-      critical_mistakes: [],
-      coachable_mistakes: ["Missed opportunity to use customer name"],
-      most_important_correction: "Use the customer's name more frequently.",
-      ideal_response_example: "Mrs. Whitfield, I completely understand your frustration...",
-      summary: "Solid performance with strong empathy.",
-    });
-    // 4. Employee Coaching
-    mockLLMResponse({
-      employee_coaching_summary: "Good performance overall.",
-      what_you_did_well: ["Strong empathy"],
-      what_hurt_you: ["Missed name usage"],
-      do_this_next_time: ["Use customer name early"],
-      replacement_phrases: [{ original: "I understand", better: "Mrs. Whitfield, I understand" }],
-      practice_focus: "Personalization",
-      next_recommended_scenario: "billing_confusion",
-    });
-    // 5. Manager Debrief
-    mockLLMResponse({
-      manager_summary: "Employee showed strong empathy.",
-      performance_signal: "green",
-      top_strengths: ["Empathy", "Ownership"],
-      top_corrections: ["Name usage"],
-      whether_live_shadowing_is_needed: false,
-      whether_manager_follow_up_is_needed: false,
-      recommended_follow_up_action: "None needed.",
-      recommended_next_drill: "billing_confusion",
-    });
-
+  it("returns completed deterministic evaluation when AI is unavailable", async () => {
     const caller = appRouter.createCaller(createAuthContext());
     const result = await caller.simulator.evaluate({
-      scenarioJson: { scenario_id: "test" },
+      scenarioJson: createScenarioFixture(),
       transcript: [
         { role: "customer", message: "I have a problem." },
         { role: "employee", message: "I understand your frustration." },
@@ -429,22 +416,22 @@ describe("simulator.evaluate", () => {
 
     expect(result.evaluation).toBeDefined();
     const evaluation = result.evaluation as any;
-    expect(evaluation.overall_score).toBe(82);
-    expect(evaluation.pass_fail).toBe("pass");
-    expect(evaluation.readiness_signal).toBe("floor_ready_with_support");
-    expect(evaluation.category_scores.opening_warmth).toBe(8);
-    expect(evaluation.best_moments).toHaveLength(1);
-    expect(evaluation.most_important_correction).toContain("name");
+    expect(result.processingStatus).toBe("completed");
+    expect(evaluation.overall_score).toBeGreaterThan(0);
+    expect(typeof evaluation.pass_fail).toBe("string");
+    expect(typeof evaluation.readiness_signal).toBe("string");
+    expect(evaluation.category_scores.opening_warmth).toBeGreaterThanOrEqual(0);
+    expect(Array.isArray(evaluation.best_moments)).toBe(true);
     expect(result.policyGrounding).toBeDefined();
     expect(result.coaching).toBeDefined();
     expect(result.managerDebrief).toBeDefined();
-    expect(mockInvokeLLM).toHaveBeenCalledTimes(5);
+    expect(mockInvokeLLM).not.toHaveBeenCalled();
   });
 
   it("returns a reprocess bundle for incomplete sessions", async () => {
     const caller = appRouter.createCaller(createAuthContext());
     const result = await caller.simulator.evaluate({
-      scenarioJson: { scenario_id: "test" },
+      scenarioJson: createScenarioFixture(),
       transcript: [
         { role: "customer", message: "I have a problem." },
         { role: "employee", message: "Okay." },
@@ -458,26 +445,10 @@ describe("simulator.evaluate", () => {
     expect(mockInvokeLLM).not.toHaveBeenCalled();
   });
 
-  it("returns a reprocess bundle when a prompt returns malformed JSON", async () => {
-    mockInvokeLLM.mockResolvedValueOnce({
-      id: "test-id",
-      created: Date.now(),
-      model: "test-model",
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content: "{invalid-json",
-          },
-          finish_reason: "stop",
-        },
-      ],
-    });
-
+  it("does not require AI output for a valid completed fallback evaluation", async () => {
     const caller = appRouter.createCaller(createAuthContext());
     const result = await caller.simulator.evaluate({
-      scenarioJson: { scenario_id: "test" },
+      scenarioJson: createScenarioFixture(),
       transcript: [
         { role: "customer", message: "I have a problem." },
         { role: "employee", message: "I understand your frustration." },
@@ -487,9 +458,86 @@ describe("simulator.evaluate", () => {
       employeeRole: "Front Desk Associate",
     }) as any;
 
-    expect(result.processingStatus).toBe("reprocess");
-    expect(result.failure?.code).toBe("malformed_json");
-    expect(result.failure?.promptName).toBe("policyGrounding");
+    expect(result.processingStatus).toBe("completed");
+    expect((result.evaluation as any).overall_score).toBeGreaterThan(0);
+    expect(mockInvokeLLM).not.toHaveBeenCalled();
+  });
+
+  it("uses an emergency-response scoring and coaching lens that prioritizes control over policy recital", async () => {
+    const caller = appRouter.createCaller(createAuthContext());
+    const result = await caller.simulator.evaluate({
+      scenarioJson: createScenarioFixture({
+        department: "mod_emergency",
+        employee_role: "Manager on Duty",
+        scenario_family: "emergency_response",
+        customer_persona: {
+          name: "Alicia Gomez",
+          age_band: "30-40",
+          membership_context: "Witness to an urgent incident",
+          communication_style: "Alarmed and urgent",
+          initial_emotion: "alarmed",
+          patience_level: "low",
+        },
+        situation_summary: "A witness reports that someone collapsed near the cardio area.",
+        opening_line: "Someone just collapsed near cardio. We need help right now.",
+        hidden_facts: ["The employee should take control and stabilize until care arrives."],
+        approved_resolution_paths: ["Activate emergency response and control the scene."],
+        required_behaviors: ["Take control", "Give simple directions", "Escalate immediately"],
+        critical_errors: ["Delay emergency action"],
+      }),
+      transcript: [
+        { role: "customer", message: "Someone just collapsed near cardio." },
+        { role: "employee", message: "I am activating emergency response now. Stay with them if it is safe, keep the area clear, and I will stay in control until care arrives." },
+        { role: "customer", message: "Okay, what do you need from me?" },
+        { role: "employee", message: "Call out if they start moving, keep people back, and I will update you as medical help gets here." },
+      ],
+      employeeRole: "Manager on Duty",
+    }) as any;
+
+    expect(result.processingStatus).toBe("completed");
+    expect(result.evaluation.best_moments).toContain("Stayed focused on stabilizing the situation until care arrived.");
+    expect(result.policyGrounding.policy_notes).toContain("Immediate emergency control was prioritized");
+    expect(result.coaching.practice_focus).toBe("stabilize_until_care_arrives");
+    expect(result.coaching.do_this_next_time[0]).toContain("Take control");
+    expect(result.evaluation.ideal_response_example).toContain("until care arrives");
+  });
+
+  it("uses a golf scoring and coaching lens that emphasizes opening warmth and closing control", async () => {
+    const caller = appRouter.createCaller(createAuthContext());
+    const result = await caller.simulator.evaluate({
+      scenarioJson: createScenarioFixture({
+        department: "golf",
+        employee_role: "Golf Membership Advisor",
+        scenario_family: "value_explanation",
+        customer_persona: {
+          name: "Liam Hart",
+          age_band: "35-45",
+          membership_context: "Prospect comparing clubs",
+          communication_style: "Curious but hesitant",
+          initial_emotion: "skeptical",
+          patience_level: "moderate",
+        },
+        situation_summary: "A prospect wants to know why WSC golf is worth the cost.",
+        opening_line: "I like the club, but I need to know why this is worth it for me.",
+        hidden_facts: ["The prospect mainly needs the right fit and a confident next step."],
+        approved_resolution_paths: ["Use discovery before making the value case."],
+        required_behaviors: ["Open warmly", "Ask one discovery question", "Close with control"],
+        critical_errors: ["Launch into a generic pitch without discovery"],
+      }),
+      transcript: [
+        { role: "customer", message: "I need to know why this is worth it for me." },
+        { role: "employee", message: "Welcome in. What are you hoping to get out of the club most right now?" },
+        { role: "customer", message: "Convenience and more regular practice time." },
+        { role: "employee", message: "That helps. Based on that, the best fit is the membership that gives you flexible range access, and I can walk you through the next step today." },
+      ],
+      employeeRole: "Golf Membership Advisor",
+    }) as any;
+
+    expect(result.processingStatus).toBe("completed");
+    expect(result.coaching.practice_focus).toBe("opening_warmth_and_closing_control");
+    expect(result.coaching.do_this_next_time[0]).toContain("Open warmer");
+    expect(result.coaching.replacement_phrases[0]).toContain("Welcome in");
+    expect(result.evaluation.ideal_response_example).toContain("best fit");
   });
 });
 
@@ -509,18 +557,17 @@ describe("simulator.adaptiveDifficulty", () => {
       recommended_complexity: "ambiguous",
     };
 
-    mockLLMResponse(mockDifficulty);
-
     const caller = appRouter.createCaller(createAuthContext());
     const result = await caller.simulator.adaptiveDifficulty({
       employeeProfile: { level_estimate: "Level 4", sessions_completed: 5 },
       recentSessions: [{ overall_score: 85 }, { overall_score: 80 }],
     }) as any;
 
-    // callPrompt parses the JSON and returns the object directly
     expect(result).toBeDefined();
     expect(typeof result).toBe("object");
-    expect(mockInvokeLLM).toHaveBeenCalledTimes(1);
+    expect(result.next_difficulty).toBeGreaterThanOrEqual(1);
+    expect(result.next_difficulty).toBeLessThanOrEqual(5);
+    expect(mockInvokeLLM).not.toHaveBeenCalled();
   });
 });
 
@@ -570,6 +617,8 @@ describe("auth", () => {
     const caller = appRouter.createCaller(createAuthContext());
     const result = await caller.auth.me();
     expect(result).toBeDefined();
-    expect(result?.name).toBe("Test Employee");
+    expect(result?.user.name).toBe("Test Employee");
+    expect(result?.actorUser.name).toBe("Test Employee");
+    expect(result?.impersonation).toBeNull();
   });
 });

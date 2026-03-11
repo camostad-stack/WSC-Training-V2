@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, FileText, Plus } from "lucide-react";
+import { Loader2, FileText, Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { departmentLabels, familyLabels } from "@/features/simulator/config";
@@ -24,6 +24,8 @@ export default function ManagerPolicies() {
   const utils = trpc.useUtils();
   const [departmentFilter, setDepartmentFilter] = useState<(typeof departmentOptions)[number]["value"]>("all");
   const [open, setOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; title: string } | null>(null);
+  const [editingPolicyId, setEditingPolicyId] = useState<number | null>(null);
   const [form, setForm] = useState({
     title: "",
     department: "none" as "none" | Exclude<(typeof departmentOptions)[number]["value"], "all">,
@@ -42,6 +44,14 @@ export default function ManagerPolicies() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const updateMutation = trpc.policies.update.useMutation({
+    onSuccess: () => {
+      toast.success("Policy updated");
+      closeEditor();
+      utils.policies.list.invalidate();
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const toggleMutation = trpc.policies.activate.useMutation({
     onSuccess: () => {
       toast.success("Policy updated");
@@ -49,6 +59,61 @@ export default function ManagerPolicies() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const deleteMutation = trpc.policies.remove.useMutation({
+    onSuccess: () => {
+      toast.success("Policy removed");
+      setDeleteTarget(null);
+      utils.policies.list.invalidate();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
+  function closeEditor() {
+    setOpen(false);
+    setEditingPolicyId(null);
+    setForm({ title: "", department: "none", scenarioFamilies: "", content: "" });
+  }
+
+  function openCreate() {
+    setEditingPolicyId(null);
+    setForm({ title: "", department: "none", scenarioFamilies: "", content: "" });
+    setOpen(true);
+  }
+
+  function openEdit(policy: any) {
+    setEditingPolicyId(policy.id);
+    setForm({
+      title: policy.title,
+      department: policy.department ?? "none",
+      scenarioFamilies: Array.isArray(policy.scenarioFamilies) ? policy.scenarioFamilies.join(", ") : "",
+      content: policy.content,
+    });
+    setOpen(true);
+  }
+
+  function submitPolicy() {
+    if (!form.title.trim() || !form.content.trim()) {
+      toast.error("Title and policy content are required");
+      return;
+    }
+
+    const payload = {
+      title: form.title.trim(),
+      department: form.department === "none" ? undefined : form.department,
+      scenarioFamilies: form.scenarioFamilies
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+      content: form.content.trim(),
+    };
+
+    if (editingPolicyId) {
+      updateMutation.mutate({ id: editingPolicyId, ...payload });
+      return;
+    }
+
+    createMutation.mutate(payload);
+  }
 
   if (policies.isLoading) {
     return <div className="flex items-center justify-center h-48"><Loader2 className="h-6 w-6 animate-spin text-teal" /></div>;
@@ -88,7 +153,7 @@ export default function ManagerPolicies() {
               ))}
             </SelectContent>
           </Select>
-          <Button onClick={() => setOpen(true)} className="bg-teal text-slate-deep hover:bg-teal/90 gap-2">
+          <Button onClick={openCreate} className="bg-teal text-slate-deep hover:bg-teal/90 gap-2">
             <Plus className="h-4 w-4" />
             New Policy
           </Button>
@@ -136,6 +201,24 @@ export default function ManagerPolicies() {
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => openEdit(policy)}
+                    className="border-border text-muted-foreground hover:text-foreground gap-2"
+                  >
+                    <Pencil className="h-4 w-4" />
+                    Edit
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDeleteTarget({ id: policy.id, title: policy.title })}
+                    className="border-red-500/30 text-red-300 hover:text-red-200 hover:border-red-400/40 gap-2"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Remove
+                  </Button>
                   <span className="text-xs text-muted-foreground">Active</span>
                   <Switch
                     checked={policy.isActive}
@@ -149,10 +232,16 @@ export default function ManagerPolicies() {
         </div>
       )}
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={(nextOpen) => {
+        if (nextOpen) {
+          setOpen(true);
+          return;
+        }
+        closeEditor();
+      }}>
         <DialogContent className="bg-card border-border max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Create Policy Document</DialogTitle>
+            <DialogTitle>{editingPolicyId ? "Edit Policy Document" : "Create Policy Document"}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div>
@@ -200,30 +289,40 @@ export default function ManagerPolicies() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>
+            <Button variant="outline" onClick={closeEditor}>
               Cancel
             </Button>
             <Button
-              onClick={() => {
-                if (!form.title.trim() || !form.content.trim()) {
-                  toast.error("Title and policy content are required");
-                  return;
-                }
-
-                createMutation.mutate({
-                  title: form.title.trim(),
-                  department: form.department === "none" ? undefined : form.department,
-                  scenarioFamilies: form.scenarioFamilies
-                    .split(",")
-                    .map((value) => value.trim())
-                    .filter(Boolean),
-                  content: form.content.trim(),
-                });
-              }}
-              disabled={createMutation.isPending}
+              onClick={submitPolicy}
+              disabled={createMutation.isPending || updateMutation.isPending}
               className="bg-teal text-slate-deep hover:bg-teal/90"
             >
-              {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Create Policy"}
+              {createMutation.isPending || updateMutation.isPending
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : editingPolicyId ? "Save Policy" : "Create Policy"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(deleteTarget)} onOpenChange={(nextOpen) => !nextOpen && setDeleteTarget(null)}>
+        <DialogContent className="bg-card border-border max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remove Policy</DialogTitle>
+          </DialogHeader>
+          <div className="text-sm text-muted-foreground">
+            Remove <span className="text-foreground font-medium">{deleteTarget?.title}</span> from the policy library.
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteTarget && deleteMutation.mutate({ id: deleteTarget.id })}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Remove Policy"}
             </Button>
           </DialogFooter>
         </DialogContent>

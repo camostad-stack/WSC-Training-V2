@@ -35,6 +35,7 @@ import {
 import { PromptExecutionError, type PipelineFailure } from "./errors";
 import { runPrompt } from "./prompt-runner";
 import { AI_SERVICE_REGISTRY } from "./registry";
+import { selectRelevantPolicies } from "../policy-matching";
 import { departmentLabels, familyLabels, getScenarioGoal, scenarioFamiliesByDepartment } from "../../../shared/wsc-content";
 import { WSC_SCENARIO_TEMPLATE_SEEDS } from "../../wsc-seed-data";
 
@@ -816,6 +817,11 @@ function buildFailureBundle(params: {
 async function retrievePolicyContext(params: {
   department?: string;
   scenarioFamily?: string;
+  scenarioTitle?: string;
+  situationSummary?: string;
+  openingLine?: string;
+  requiredBehaviors?: string[];
+  criticalErrors?: string[];
 }) {
   const db = await getDb();
   if (!db) return WSC_POLICY_CONTEXT;
@@ -832,16 +838,20 @@ async function retrievePolicyContext(params: {
       params.department ? or(eq(policyDocuments.department, params.department as any), isNull(policyDocuments.department)) : eq(policyDocuments.isActive, true),
     ));
 
-  const filtered = activePolicies.filter(policy => {
-    if (!params.scenarioFamily) return true;
-    if (!policy.scenarioFamilies || policy.scenarioFamilies.length === 0) return true;
-    return policy.scenarioFamilies.includes(params.scenarioFamily);
+  const selected = selectRelevantPolicies(activePolicies, {
+    department: params.department,
+    scenarioFamily: params.scenarioFamily,
+    scenarioTitle: params.scenarioTitle,
+    situationSummary: params.situationSummary,
+    openingLine: params.openingLine,
+    requiredBehaviors: params.requiredBehaviors,
+    criticalErrors: params.criticalErrors,
   });
 
-  if (filtered.length === 0) return WSC_POLICY_CONTEXT;
+  if (selected.length === 0) return WSC_POLICY_CONTEXT;
 
-  return filtered
-    .map(policy => `Policy: ${policy.title}\n${policy.content}`)
+  return [WSC_POLICY_CONTEXT, ...selected
+    .map(policy => `Policy: ${policy.title}\n${policy.content}`)]
     .join("\n\n");
 }
 
@@ -987,6 +997,10 @@ export async function generateScenario(params: {
   const supportedFamilies = scenarioFamiliesByDepartment[departmentKey]
     .map((family) => familyLabels[family] || family)
     .join(", ");
+  const policyContext = await retrievePolicyContext({
+    department: departmentKey,
+    scenarioFamily: params.scenarioFamily,
+  });
   const prompt = `Build 1 advanced WSC scenario.
 Inputs:
 Department: ${departmentLabels[departmentKey]}
@@ -1001,6 +1015,9 @@ Requirements:
 - Use only the current role track for the department.
 - Keep it trainable in 3-5 turns.
 - Avoid generic retail, hotel, or call-center situations.
+
+Approved policy context:
+${policyContext}
 
 Return the full scenario JSON with branch_logic, emotion_progression, and completion_rules.`;
 
@@ -1078,6 +1095,11 @@ export async function runPostSessionEvaluation(params: {
     || await retrievePolicyContext({
       department: parsedScenario.department,
       scenarioFamily: parsedScenario.scenario_family,
+      scenarioTitle: parsedScenario.scenario_id,
+      situationSummary: parsedScenario.situation_summary,
+      openingLine: parsedScenario.opening_line,
+      requiredBehaviors: parsedScenario.required_behaviors,
+      criticalErrors: parsedScenario.critical_errors,
     });
 
   const transcriptAssessment = assessTranscript(params.transcript);

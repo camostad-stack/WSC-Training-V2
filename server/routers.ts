@@ -42,6 +42,7 @@ import { markAssignmentInProgress } from "./services/assignments";
 import { logAudit } from "./services/audit-log";
 import { createLiveVoiceSessionCredentials } from "./services/live-voice";
 import { normalizeDepartment } from "./services/normalizers";
+import { normalizePolicyScenarioFamilies } from "./services/policy-matching";
 import { createManagerReview } from "./services/reviews";
 import { saveSimulationSession } from "./services/session-persistence";
 import { getSupabaseAdmin } from "./_core/supabase";
@@ -957,11 +958,55 @@ export const appRouter = router({
         await db.insert(policyDocuments).values({
           title: input.title,
           department: (input.department as any) ?? null,
-          scenarioFamilies: input.scenarioFamilies ?? null,
+          scenarioFamilies: normalizePolicyScenarioFamilies(input.scenarioFamilies),
           content: input.content,
           uploadedBy: ctx.user.id,
         });
         await logAudit(ctx.user.id, "policy_upload", "policy_document", undefined, { title: input.title });
+        return { success: true };
+      }),
+
+    update: adminProcedure
+      .input(z.object({
+        id: z.number(),
+        title: z.string(),
+        department: departmentEnum.optional(),
+        scenarioFamilies: z.array(z.string()).optional(),
+        content: z.string(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) return { success: false };
+
+        const existing = await db.select().from(policyDocuments).where(eq(policyDocuments.id, input.id)).limit(1);
+        const current = existing[0];
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Policy document not found" });
+        }
+
+        const normalizedScenarioFamilies = normalizePolicyScenarioFamilies(input.scenarioFamilies);
+        const titleChanged = current.title !== input.title;
+        const departmentChanged = (current.department ?? null) !== ((input.department as any) ?? null);
+        const contentChanged = current.content !== input.content;
+        const familiesChanged = JSON.stringify(current.scenarioFamilies ?? []) !== JSON.stringify(normalizedScenarioFamilies ?? []);
+        const version = titleChanged || departmentChanged || contentChanged || familiesChanged
+          ? (current.version ?? 1) + 1
+          : current.version;
+
+        await db.update(policyDocuments).set({
+          title: input.title,
+          department: (input.department as any) ?? null,
+          scenarioFamilies: normalizedScenarioFamilies,
+          content: input.content,
+          version,
+        }).where(eq(policyDocuments.id, input.id));
+
+        await logAudit(ctx.user.id, "policy_upload", "policy_document", input.id, {
+          action: "edit",
+          title: input.title,
+          version,
+        });
+
         return { success: true };
       }),
 
@@ -972,6 +1017,27 @@ export const appRouter = router({
         if (!db) return { success: false };
         await db.update(policyDocuments).set({ isActive: input.isActive }).where(eq(policyDocuments.id, input.id));
         await logAudit(ctx.user.id, "policy_activate", "policy_document", input.id, { isActive: input.isActive });
+        return { success: true };
+      }),
+
+    remove: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) return { success: false };
+
+        const existing = await db.select().from(policyDocuments).where(eq(policyDocuments.id, input.id)).limit(1);
+        const current = existing[0];
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Policy document not found" });
+        }
+
+        await db.delete(policyDocuments).where(eq(policyDocuments.id, input.id));
+        await logAudit(ctx.user.id, "policy_upload", "policy_document", input.id, {
+          action: "delete",
+          title: current.title,
+          version: current.version,
+        });
         return { success: true };
       }),
   }),

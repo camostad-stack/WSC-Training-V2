@@ -1,4 +1,4 @@
-import { ForbiddenError } from "@shared/_core/errors";
+import { ForbiddenError } from "../../shared/_core/errors";
 import type { Request } from "express";
 import { parse } from "cookie";
 import type { User } from "../../drizzle/schema";

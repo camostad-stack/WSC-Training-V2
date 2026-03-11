@@ -1,4 +1,4 @@
-import { COOKIE_NAME } from "@shared/const";
+import { COOKIE_NAME } from "../shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { IMPERSONATION_COOKIE_NAME } from "./_core/sdk";
@@ -142,9 +142,9 @@ export const appRouter = router({
     me: publicProcedure.query(({ ctx }) => {
       if (!ctx.user) return null;
 
-      return {
-        user: ctx.user,
-        actorUser: ctx.actorUser ?? ctx.user,
+        return {
+          user: ctx.user,
+          actorUser: ctx.actorUser ?? ctx.user,
         impersonation: ctx.impersonation
           ? {
             active: true,
@@ -154,8 +154,68 @@ export const appRouter = router({
             actorUserName: (ctx.actorUser ?? ctx.user).name ?? (ctx.actorUser ?? ctx.user).email ?? `User ${(ctx.actorUser ?? ctx.user).id}`,
           }
           : null,
-      } as const;
+        } as const;
     }),
+    register: publicProcedure
+      .input(z.object({
+        name: z.string().min(1),
+        email: z.string().email(),
+        password: z.string().min(8),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
+        }
+
+        const existingUsers = await getSupabaseAdmin().auth.admin.listUsers({
+          page: 1,
+          perPage: 200,
+        });
+
+        const existingAuthUser = existingUsers.data?.users.find((user) =>
+          user.email?.toLowerCase() === input.email.toLowerCase()
+        );
+
+        if (existingAuthUser) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "An account with that email already exists",
+          });
+        }
+
+        const { data, error } = await getSupabaseAdmin().auth.admin.createUser({
+          email: input.email,
+          password: input.password,
+          email_confirm: true,
+          user_metadata: {
+            name: input.name,
+            full_name: input.name,
+          },
+        });
+
+        if (error || !data.user) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: error?.message ?? "Unable to create account",
+          });
+        }
+
+        await db.insert(users).values({
+          openId: data.user.id,
+          name: input.name,
+          email: input.email,
+          role: "employee",
+          isActive: true,
+          loginMethod: "supabase_email",
+          lastSignedIn: new Date(),
+        });
+
+        return {
+          success: true,
+          email: input.email,
+        } as const;
+      }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });

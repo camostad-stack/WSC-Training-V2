@@ -43,6 +43,7 @@ import { hasAuthConfig } from "@/const";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/lib/supabase";
+import { trpc } from "@/lib/trpc";
 
 function LoadingScreen() {
   return (
@@ -57,12 +58,14 @@ function LoadingScreen() {
 
 function LoginScreen() {
   const authConfigured = hasAuthConfig();
+  const utils = trpc.useUtils();
   const [mode, setMode] = useState<"sign_in" | "sign_up">("sign_in");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const registerMutation = trpc.auth.register.useMutation();
 
   const handleSubmit = async () => {
     setIsSubmitting(true);
@@ -75,18 +78,18 @@ function LoginScreen() {
         });
         if (signInError) throw signInError;
       } else {
-        const { error: signUpError } = await supabase.auth.signUp({
+        await registerMutation.mutateAsync({
+          name,
           email,
           password,
-          options: {
-            data: {
-              name,
-              full_name: name,
-            },
-          },
         });
-        if (signUpError) throw signUpError;
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (signInError) throw signInError;
       }
+      await utils.auth.me.invalidate();
     } catch (error) {
       setError(error instanceof Error ? error.message : "Authentication failed");
     } finally {
@@ -151,7 +154,7 @@ function LoginScreen() {
               className="bg-card border-border"
             />
             {error && <p className="text-sm text-red-400">{error}</p>}
-            <Button onClick={() => void handleSubmit()} className="w-full bg-teal text-slate-deep hover:bg-teal/90 font-semibold" size="lg" disabled={isSubmitting || !email || !password || (mode === "sign_up" && !name)}>
+            <Button onClick={() => void handleSubmit()} className="w-full bg-teal text-slate-deep hover:bg-teal/90 font-semibold" size="lg" disabled={isSubmitting || registerMutation.isPending || !email || !password || (mode === "sign_up" && !name)}>
               {isSubmitting ? "Working..." : mode === "sign_in" ? "Sign In" : "Create Account"}
             </Button>
           </div>

@@ -20,7 +20,7 @@ import {
   simulationSessions,
   users,
 } from "../drizzle/schema";
-import { departmentRoles } from "@shared/wsc-content";
+import { departmentRoles } from "../shared/wsc-content";
 import { closeDb, getDb } from "./db";
 import { WSC_POLICY_DOCUMENT_SEEDS, WSC_SCENARIO_TEMPLATE_SEEDS } from "./wsc-seed-data";
 import { getSupabaseAdmin } from "./_core/supabase";

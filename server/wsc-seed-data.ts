@@ -1,4 +1,4 @@
-import { departmentRoles } from "@shared/wsc-content";
+import { departmentRoles } from "../shared/wsc-content";
 
 export const WSC_SCENARIO_TEMPLATE_SEEDS = [
   {

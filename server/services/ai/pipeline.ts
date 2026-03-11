@@ -35,7 +35,7 @@ import {
 import { PromptExecutionError, type PipelineFailure } from "./errors";
 import { runPrompt } from "./prompt-runner";
 import { AI_SERVICE_REGISTRY } from "./registry";
-import { departmentLabels, familyLabels, getScenarioGoal, scenarioFamiliesByDepartment } from "@shared/wsc-content";
+import { departmentLabels, familyLabels, getScenarioGoal, scenarioFamiliesByDepartment } from "../../../shared/wsc-content";
 import { WSC_SCENARIO_TEMPLATE_SEEDS } from "../../wsc-seed-data";
 
 const DEFAULT_CATEGORY_SCORES = {

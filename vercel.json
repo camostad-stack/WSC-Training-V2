@@ -5,11 +5,9 @@
   "outputDirectory": "public",
   "functions": {
     "api/trpc/index.js": {
-      "runtime": "nodejs20.x",
       "maxDuration": 30
     },
     "api/trpc/[...trpc].js": {
-      "runtime": "nodejs20.x",
       "maxDuration": 30
     }
   },

@@ -358,6 +358,14 @@ function buildResolvedReply(scenario: ScenarioDirectorResult) {
   return "Okay. That gives me a clear next step and a real update to expect.";
 }
 
+function getCustomerRevealableHiddenFact(hiddenFact?: string) {
+  if (!hiddenFact) return "";
+  if (/\bemployee should\b|\bprospect mainly needs\b|\bmember mainly needs\b|\bapproved resolution\b|\brequired behaviors?\b|\btraining\b/i.test(hiddenFact)) {
+    return "";
+  }
+  return hiddenFact;
+}
+
 function buildProgressPrefix(params: {
   scenario: ScenarioDirectorResult;
   newlyCompletedLabels: string[];
@@ -654,7 +662,7 @@ function buildLocalTurnResponse(params: {
   const hiddenFact = goalProgress.goalAdvanced
     && employeeTurns <= 2
     && (score.verification || score.explanation || score.discovery || score.recommendation || score.direction || score.safetyAction)
-      ? params.scenario.hidden_facts[0] || ""
+      ? getCustomerRevealableHiddenFact(params.scenario.hidden_facts[0])
       : "";
   const customerReply = score.critical
     ? safetyOrUrgent

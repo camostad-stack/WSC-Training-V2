@@ -376,11 +376,11 @@ export default function ManagerPolicies() {
         }
         closeIngest();
       }}>
-        <DialogContent className="bg-card border-border max-w-3xl">
+        <DialogContent className="bg-card border-border max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle>Import Policy Document</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 py-2">
+          <div className="space-y-4 py-2 overflow-y-auto pr-2">
             <p className="text-sm text-muted-foreground">
               Paste a long handbook, SOP, or policy document. The app will split it into usable policy records and tag them to likely scenarios.
             </p>
@@ -418,7 +418,7 @@ export default function ManagerPolicies() {
                 value={ingestForm.content}
                 onChange={(event) => setIngestForm({ ...ingestForm, content: event.target.value })}
                 placeholder="Paste the full policy document here."
-                className="bg-background border-border min-h-72"
+                className="bg-background border-border min-h-72 max-h-[45vh] overflow-y-auto"
               />
             </div>
 
@@ -452,7 +452,7 @@ export default function ManagerPolicies() {
               </div>
             )}
           </div>
-          <DialogFooter>
+          <DialogFooter className="pt-3 border-t border-border">
             <Button variant="outline" onClick={closeIngest}>
               Close
             </Button>

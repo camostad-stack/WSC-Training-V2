@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, FileText, Pencil, Plus, Trash2 } from "lucide-react";
+import { Loader2, FileText, Pencil, Plus, Trash2, Upload } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { departmentLabels, familyLabels } from "@/features/simulator/config";
@@ -24,12 +24,19 @@ export default function ManagerPolicies() {
   const utils = trpc.useUtils();
   const [departmentFilter, setDepartmentFilter] = useState<(typeof departmentOptions)[number]["value"]>("all");
   const [open, setOpen] = useState(false);
+  const [ingestOpen, setIngestOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; title: string } | null>(null);
   const [editingPolicyId, setEditingPolicyId] = useState<number | null>(null);
+  const [ingestResult, setIngestResult] = useState<Array<{ id: number; title: string; department: string | null; scenarioFamilies: string[] | null; version: number }> | null>(null);
   const [form, setForm] = useState({
     title: "",
     department: "none" as "none" | Exclude<(typeof departmentOptions)[number]["value"], "all">,
     scenarioFamilies: "",
+    content: "",
+  });
+  const [ingestForm, setIngestForm] = useState({
+    sourceTitle: "",
+    department: "auto" as "auto" | "none" | Exclude<(typeof departmentOptions)[number]["value"], "all">,
     content: "",
   });
 
@@ -63,6 +70,14 @@ export default function ManagerPolicies() {
     onSuccess: () => {
       toast.success("Policy removed");
       setDeleteTarget(null);
+      utils.policies.list.invalidate();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const ingestMutation = trpc.policies.ingest.useMutation({
+    onSuccess: (result) => {
+      toast.success(`Imported ${result.createdCount} policy records`);
+      setIngestResult(result.createdPolicies);
       utils.policies.list.invalidate();
     },
     onError: (error) => toast.error(error.message),
@@ -115,6 +130,28 @@ export default function ManagerPolicies() {
     createMutation.mutate(payload);
   }
 
+  function closeIngest() {
+    setIngestOpen(false);
+    setIngestResult(null);
+    setIngestForm({ sourceTitle: "", department: "auto", content: "" });
+  }
+
+  function submitIngest() {
+    if (ingestForm.content.trim().length < 40) {
+      toast.error("Paste the policy document content before importing");
+      return;
+    }
+
+    ingestMutation.mutate({
+      sourceTitle: ingestForm.sourceTitle.trim() || undefined,
+      department: ingestForm.department === "auto" || ingestForm.department === "none"
+        ? undefined
+        : ingestForm.department,
+      forceGlobal: ingestForm.department === "none",
+      content: ingestForm.content.trim(),
+    });
+  }
+
   if (policies.isLoading) {
     return <div className="flex items-center justify-center h-48"><Loader2 className="h-6 w-6 animate-spin text-teal" /></div>;
   }
@@ -153,6 +190,10 @@ export default function ManagerPolicies() {
               ))}
             </SelectContent>
           </Select>
+          <Button variant="outline" onClick={() => setIngestOpen(true)} className="gap-2 border-border">
+            <Upload className="h-4 w-4" />
+            Import Policy Document
+          </Button>
           <Button onClick={openCreate} className="bg-teal text-slate-deep hover:bg-teal/90 gap-2">
             <Plus className="h-4 w-4" />
             New Policy
@@ -323,6 +364,104 @@ export default function ManagerPolicies() {
               disabled={deleteMutation.isPending}
             >
               {deleteMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Remove Policy"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={ingestOpen} onOpenChange={(nextOpen) => {
+        if (nextOpen) {
+          setIngestOpen(true);
+          return;
+        }
+        closeIngest();
+      }}>
+        <DialogContent className="bg-card border-border max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Import Policy Document</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              Paste a long handbook, SOP, or policy document. The app will split it into usable policy records and tag them to likely scenarios.
+            </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <Label className="text-xs">Source Title</Label>
+                <Input
+                  value={ingestForm.sourceTitle}
+                  onChange={(event) => setIngestForm({ ...ingestForm, sourceTitle: event.target.value })}
+                  placeholder="WSC front desk handbook"
+                  className="bg-background border-border"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Department Scope</Label>
+                <Select value={ingestForm.department} onValueChange={(value) => setIngestForm({ ...ingestForm, department: value as typeof ingestForm.department })}>
+                  <SelectTrigger className="bg-background border-border">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto-detect</SelectItem>
+                    <SelectItem value="none">All Departments</SelectItem>
+                    {departmentOptions.filter((option) => option.value !== "all").map((department) => (
+                      <SelectItem key={department.value} value={department.value}>
+                        {department.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Policy Document</Label>
+              <Textarea
+                value={ingestForm.content}
+                onChange={(event) => setIngestForm({ ...ingestForm, content: event.target.value })}
+                placeholder="Paste the full policy document here."
+                className="bg-background border-border min-h-72"
+              />
+            </div>
+
+            {ingestResult && ingestResult.length > 0 && (
+              <div className="rounded-xl border border-border p-4 space-y-3 bg-background/50">
+                <div className="text-sm font-medium">Imported Records</div>
+                <div className="space-y-2">
+                  {ingestResult.map((policy) => (
+                    <div key={policy.id} className="rounded-lg border border-border/70 p-3">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium">{policy.title}</span>
+                        <Badge variant="outline" className="text-[10px] border-0 text-muted-foreground bg-secondary/50">
+                          v{policy.version}
+                        </Badge>
+                        <Badge variant="outline" className="text-[10px] border-border/60 text-muted-foreground">
+                          {policy.department ? departmentLabels[policy.department as keyof typeof departmentLabels] : "All departments"}
+                        </Badge>
+                      </div>
+                      {Array.isArray(policy.scenarioFamilies) && policy.scenarioFamilies.length > 0 && (
+                        <div className="flex items-center gap-2 flex-wrap mt-2">
+                          {policy.scenarioFamilies.map((family) => (
+                            <Badge key={family} variant="outline" className="text-[10px] border-border/60 text-muted-foreground">
+                              {familyLabels[family] || family.replace(/_/g, " ")}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeIngest}>
+              Close
+            </Button>
+            <Button
+              onClick={submitIngest}
+              disabled={ingestMutation.isPending}
+              className="bg-teal text-slate-deep hover:bg-teal/90"
+            >
+              {ingestMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Analyze And Import"}
             </Button>
           </DialogFooter>
         </DialogContent>

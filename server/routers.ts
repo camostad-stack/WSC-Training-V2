@@ -41,6 +41,7 @@ import { assertManagerCanAccessEmployee, assertManagerCanAccessSession, isGlobal
 import { markAssignmentInProgress } from "./services/assignments";
 import { logAudit } from "./services/audit-log";
 import { createLiveVoiceSessionCredentials } from "./services/live-voice";
+import { ingestPolicyDocument } from "./services/policy-ingestion";
 import { normalizeDepartment } from "./services/normalizers";
 import { normalizePolicyScenarioFamilies } from "./services/policy-matching";
 import { createManagerReview } from "./services/reviews";
@@ -1039,6 +1040,57 @@ export const appRouter = router({
           version: current.version,
         });
         return { success: true };
+      }),
+
+    ingest: adminProcedure
+      .input(z.object({
+        sourceTitle: z.string().optional(),
+        department: departmentEnum.optional(),
+        forceGlobal: z.boolean().optional(),
+        content: z.string().min(40),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) return { success: false, createdCount: 0, createdPolicies: [] };
+
+        const drafts = ingestPolicyDocument({
+          sourceTitle: input.sourceTitle?.trim() || undefined,
+          department: input.forceGlobal ? null : input.department,
+          content: input.content,
+        });
+
+        if (drafts.length === 0) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Document did not contain any usable policy sections" });
+        }
+
+        const inserted = await db.insert(policyDocuments).values(
+          drafts.map((draft) => ({
+            title: draft.title,
+            department: (draft.department as any) ?? null,
+            scenarioFamilies: draft.scenarioFamilies ?? null,
+            content: draft.content,
+            uploadedBy: ctx.user.id,
+          })),
+        ).returning({
+          id: policyDocuments.id,
+          title: policyDocuments.title,
+          department: policyDocuments.department,
+          scenarioFamilies: policyDocuments.scenarioFamilies,
+          version: policyDocuments.version,
+        });
+
+        await logAudit(ctx.user.id, "policy_upload", "policy_document", undefined, {
+          action: "ingest",
+          sourceTitle: input.sourceTitle ?? null,
+          department: input.forceGlobal ? null : input.department ?? null,
+          createdCount: inserted.length,
+        });
+
+        return {
+          success: true,
+          createdCount: inserted.length,
+          createdPolicies: inserted,
+        };
       }),
   }),
 

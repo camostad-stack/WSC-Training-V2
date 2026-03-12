@@ -123,17 +123,268 @@ function buildLocalScenario(params: {
 function scoreEmployeeMessage(message: string) {
   const lower = message.toLowerCase();
   const empathy = /\bsorry\b|\bunderstand\b|\bfrustrat|\bthat makes sense\b|\bi can see\b/.test(lower);
-  const ownership = /\bi will\b|\bi'll\b|\blet me\b|\bi can\b|\bi'm going to\b/.test(lower);
+  const ownership = /\bi will\b|\bi'll\b|\blet me\b|\bi can\b|\bi'm going to\b|\btaking ownership\b|\bown this\b|\bi'm on it\b|\bi have this\b/.test(lower);
   const direct = message.trim().split(/\s+/).length >= 8 && !/\bmaybe\b|\bprobably\b|\bkind of\b/.test(lower);
   const policy = /\bpolicy\b|\bverify\b|\bcheck\b|\baccount\b|\breservation\b|\bmanager\b|\bfollow up\b|\btoday\b|\bminutes\b|\bcredit\b|\bcancel\b/.test(lower);
   const avoidant = /\bnot my\b|\bcan't help\b|\bdon't know\b|\byou need to\b|\bcall your bank\b/.test(lower);
   const critical = /\bcalm down\b|\bthat's not our fault\b|\bnothing we can do\b|\bcall your bank\b/.test(lower);
   const escalation = /\bmanager\b|\bsupervisor\b|\bmod\b/.test(lower);
-  return { empathy, ownership, direct, policy, avoidant, critical, escalation };
+  const acknowledgment = empathy || /\bthanks for telling me\b|\bi hear you\b|\bi get why\b|\bthat sounds\b|\bthat would be frustrating\b/.test(lower);
+  const verification = /\bverify\b|\bcheck\b|\breview\b|\bconfirm\b|\blook into\b|\bpull up\b|\baccount\b|\bledger\b|\breservation\b/.test(lower);
+  const explanation = /\bexplain\b|\bclarify\b|\bwhat happened\b|\bhere'?s why\b|\bwhy this happened\b|\bwhy you were\b|\bpending\b|\bfinal\b|\bstatus\b|\bmeans\b/.test(lower);
+  const nextStep = /\bnext step\b|\bprocess\b|\brebook\b|\brefund\b|\breverse\b|\bcredit\b|\bschedule\b|\bbook\b|\bhold a spot\b|\bupdate you\b|\bfollow up\b|\bwalk you through\b|\bget that moving\b|\bset that up\b|\bget you into\b|\bopen slot\b|\bmove you to\b|\bconfirm it\b/.test(lower);
+  const timeline = /\bwithin\b|\bby\b|\btoday\b|\bbefore\b|\bafter\b|\bminutes\b|\bhours\b|\bthis afternoon\b|\bthis morning\b|\btonight\b|\bnext update\b|\byou will hear\b/.test(lower);
+  const discovery = /\?/.test(message) || /\bwhat are you looking for\b|\bwhat matters most\b|\bhow often\b|\btell me about\b|\bwhat kind of\b|\bwhat are you hoping\b/.test(lower);
+  const recommendation = /\brecommend\b|\bbest fit\b|\bfor someone like you\b|\bi'd suggest\b|\bhere's the best option\b/.test(lower);
+  const close = /\bmove forward\b|\bnext step\b|\bbook\b|\bschedule\b|\bget started\b|\bhold a spot\b|\bset that up\b|\bready to\b/.test(lower);
+  const safetyAction = /\b911\b|\bems\b|\bemergency response\b|\bactivate\b|\bsecure\b|\bblock\b|\bblocking\b|\btag out\b|\btagging\b|\btag it out\b|\bout of use\b|\bclose the area\b|\bclear the area\b|\bstabilize\b|\bcare arrives\b/.test(lower);
+  const direction = /\bstay\b|\bkeep\b|\bclear\b|\bmove\b|\bleave\b|\bstep back\b|\bdo not\b|\bmeet ems\b|\bkeep people back\b|\bcome with me\b/.test(lower);
+  const reassurance = /\bhelp is on the way\b|\bi'll keep you updated\b|\bwe're with you\b|\byou're not alone\b|\bi've got this\b/.test(lower);
+  const warmth = /\bwelcome\b|\bglad you came in\b|\bhappy to help\b|\bgood to meet you\b|\bthanks for coming in\b/.test(lower);
+  const stabilize = /\bstabilize\b|\buntil care arrives\b|\buntil help arrives\b|\buntil ems arrives\b/.test(lower);
+  return {
+    empathy,
+    ownership,
+    direct,
+    policy,
+    avoidant,
+    critical,
+    escalation,
+    acknowledgment,
+    verification,
+    explanation,
+    nextStep,
+    timeline,
+    discovery,
+    recommendation,
+    close,
+    safetyAction,
+    direction,
+    reassurance,
+    warmth,
+    stabilize,
+  };
 }
 
 function hasPatternMatch(text: string, patterns: RegExp[]) {
   return patterns.some(pattern => pattern.test(text));
+}
+
+type EmployeeSignalProfile = ReturnType<typeof scoreEmployeeMessage>;
+
+type ObjectiveDefinition = {
+  key: string;
+  label: string;
+  met: (signals: EmployeeSignalProfile) => boolean;
+  ask: (ctx: { improved: boolean; stalled: boolean }) => string;
+};
+
+type GoalProgress = {
+  goal: ReturnType<typeof getScenarioGoal>;
+  goalAdvanced: boolean;
+  goalResolved: boolean;
+  trustDelta: number;
+  clarityDelta: number;
+  reply: string;
+  progressSummary: string;
+  nextMissing: string | null;
+  completedThisTurn: string[];
+};
+
+function combineEmployeeSignals(messages: string[]) {
+  return scoreEmployeeMessage(messages.join("\n"));
+}
+
+function buildScenarioObjectives(scenario: ScenarioDirectorResult): ObjectiveDefinition[] {
+  if (scenario.scenario_family === "emergency_response") {
+    return [
+      {
+        key: "take_control",
+        label: "take control immediately",
+        met: (signals) => signals.ownership || signals.safetyAction,
+        ask: ({ improved }) => improved
+          ? "What do you need me or anyone nearby to do right now while you take control?"
+          : "Tell me the immediate emergency step right now. What are you doing first?",
+      },
+      {
+        key: "give_direction",
+        label: "give a direct instruction",
+        met: (signals) => signals.direction,
+        ask: ({ improved, stalled }) => improved
+          ? "What do you need us to do right now while care is moving?"
+          : stalled
+            ? "I still need a direct instruction. What should I do right now?"
+            : "What do you need me to do right now while you handle the patient?",
+      },
+      {
+        key: "stabilize_until_care_arrives",
+        label: "stabilize until care arrives",
+        met: (signals) => signals.stabilize || (signals.reassurance && signals.timeline),
+        ask: ({ improved, stalled }) => improved
+          ? "What is the next update until care arrives?"
+          : stalled
+            ? "I still need to know what happens next until care arrives."
+            : "What is the next update until care arrives?",
+      },
+    ];
+  }
+
+  if (scenario.department === "mod_emergency") {
+    return [
+      {
+        key: "own_the_situation",
+        label: "take ownership",
+        met: (signals) => signals.ownership || signals.safetyAction,
+        ask: ({ improved }) => improved
+          ? "What is secured right now?"
+          : "What are you doing right now to take control and make this safe?",
+      },
+      {
+        key: "secure_or_direct",
+        label: "secure the issue",
+        met: (signals) => signals.safetyAction || signals.direction,
+        ask: ({ improved, stalled }) => improved
+          ? "What is being secured right now, and what do you need people to do?"
+          : stalled
+            ? "I still need the actual safety step. What is secured right now?"
+            : "What is being secured right now, and what do you need people to do?",
+      },
+      {
+        key: "give_next_update",
+        label: "give the next update",
+        met: (signals) => signals.timeline || signals.nextStep,
+        ask: ({ improved, stalled }) => improved
+          ? "When is the next update coming?"
+          : stalled
+            ? "I still do not know what happens next from here."
+            : "What is the next update from here?",
+      },
+    ];
+  }
+
+  if (scenario.department === "golf") {
+    return [
+      {
+        key: "open_warm",
+        label: "open with warmth",
+        met: (signals) => signals.warmth || signals.empathy,
+        ask: ({ improved }) => improved
+          ? "Can you stay with me for a second before pitching me?"
+          : "Can you slow down and meet me first before pitching me?",
+      },
+      {
+        key: "discover_need",
+        label: "ask discovery questions",
+        met: (signals) => signals.discovery,
+        ask: ({ improved, stalled }) => improved
+          ? "Before you pitch me, can you ask what I’m actually looking for?"
+          : stalled
+            ? "You are still talking at me. Can you ask what I am actually looking for?"
+            : "Before you pitch me, can you ask what I’m actually looking for?",
+      },
+      {
+        key: "recommend_fit",
+        label: "make a recommendation",
+        met: (signals) => signals.recommendation,
+        ask: ({ improved, stalled }) => improved
+          ? "Based on that, what would you actually recommend for me?"
+          : stalled
+            ? "I still do not know what you would recommend for someone like me."
+            : "Based on what I told you, what would you actually recommend for someone like me?",
+      },
+      {
+        key: "close_next_step",
+        label: "close with a next step",
+        met: (signals) => signals.close || signals.timeline || signals.nextStep,
+        ask: ({ improved, stalled }) => improved
+          ? "What would that look like if I wanted to move today?"
+          : stalled
+            ? "I still do not know the next step if I wanted to move forward."
+            : "What would the next step be if I wanted to move forward today?",
+      },
+    ];
+  }
+
+  return [
+    {
+      key: "acknowledge_or_own",
+      label: "acknowledge the concern",
+      met: (signals) => signals.acknowledgment || signals.ownership,
+      ask: ({ improved }) => improved
+        ? "What are you checking or confirming right now?"
+        : "I need to know you understand the actual problem and that someone is taking ownership of it.",
+    },
+      {
+        key: "verify_or_explain",
+        label: "verify the facts",
+        met: (signals) => signals.verification || signals.explanation || signals.policy,
+        ask: ({ improved, stalled }) => improved
+        ? "What are you checking or confirming right now?"
+        : stalled
+          ? "I still do not know what you are checking or what is actually true here."
+          : "Okay. What are you checking or doing right now to move this forward?",
+    },
+      {
+        key: "give_next_step",
+        label: "give a next step",
+        met: (signals) => signals.nextStep || signals.escalation,
+        ask: ({ improved, stalled }) => improved
+        ? "What is the next concrete step from here for me?"
+        : stalled
+          ? "I still need the actual next step, not just general reassurance."
+          : "What is the next concrete step from here for me?",
+    },
+    {
+      key: "set_timeline",
+      label: "set an update timeline",
+      met: (signals) => signals.timeline,
+      ask: ({ stalled }) => stalled
+        ? "I still do not know when I should expect the update."
+        : "When exactly should I expect the next update from you?",
+    },
+  ];
+}
+
+function buildResolvedReply(scenario: ScenarioDirectorResult) {
+  if (scenario.scenario_family === "emergency_response") {
+    return "Okay. I understand. I will do that. Keep me updated until care arrives.";
+  }
+  if (scenario.department === "mod_emergency") {
+    return "Okay. That sounds controlled. Keep the response moving and let me know the next update.";
+  }
+  if (scenario.department === "golf") {
+    return "Okay. That feels specific and helpful. I can picture the next step now.";
+  }
+  return "Okay. That gives me a clear next step and a real update to expect.";
+}
+
+function buildProgressPrefix(params: {
+  scenario: ScenarioDirectorResult;
+  newlyCompletedLabels: string[];
+}) {
+  const firstCompleted = params.newlyCompletedLabels[0];
+
+  if (!firstCompleted) {
+    return "";
+  }
+
+  if (params.scenario.scenario_family === "emergency_response") {
+    if (firstCompleted === "take control immediately") return "Okay. I can hear you taking control.";
+    if (firstCompleted === "give a direct instruction") return "Okay. That gives me something clear to do.";
+    return "Okay. I hear you.";
+  }
+
+  if (params.scenario.department === "golf") {
+    if (firstCompleted === "open with warmth") return "Okay. This already feels easier to work with.";
+    if (firstCompleted === "ask discovery questions") return "Okay. That helps me feel like you are actually listening.";
+    if (firstCompleted === "make a recommendation") return "Okay. That is more specific.";
+    return "Okay. That helps.";
+  }
+
+  if (firstCompleted === "acknowledge the concern") return "Okay. I can hear you taking this seriously.";
+  if (firstCompleted === "verify the facts") return "Okay. That helps.";
+  if (firstCompleted === "give a next step") return "Alright. That is more concrete.";
+  return "Okay. That makes things clearer.";
 }
 
 function assessGoalProgress(params: {
@@ -141,168 +392,58 @@ function assessGoalProgress(params: {
   transcript: TranscriptTurn[];
   employeeResponse: string;
   score: ReturnType<typeof scoreEmployeeMessage>;
-}) {
-  const lower = params.employeeResponse.toLowerCase();
-  const employeeTurns = params.transcript.filter(turn => turn.role === "employee").length;
-  const firstEmployeeTurn = employeeTurns <= 1;
+}): GoalProgress {
   const goal = getScenarioGoal(params.scenario);
-  const discoverySignal = /\?/.test(params.employeeResponse)
-    || hasPatternMatch(lower, [/\bwhat are you looking for\b/, /\bwhat matters most\b/, /\bhow often\b/, /\btell me about\b/, /\bwhat kind of\b/]);
-  const fitSignal = hasPatternMatch(lower, [/\bbest fit\b/, /\brecommend\b/, /\bbased on what you told me\b/, /\bfor someone like you\b/, /\btrial\b/, /\btour\b/, /\bbooking\b/, /\bbook\b/]);
-  const actionSignal = hasPatternMatch(lower, [/\bactivate\b/, /\bcall\b/, /\bdispatch\b/, /\bsend\b/, /\bsecure\b/, /\bblock\b/, /\btag\b/, /\bclose\b/, /\bclean\b/, /\bverify\b/, /\bcheck\b/, /\bhandle\b/, /\bfix\b/, /\bprocess\b/, /\breverse\b/, /\brebook\b/, /\bschedule\b/, /\bupdate\b/]);
-  const directionSignal = hasPatternMatch(lower, [/\bstay\b/, /\bkeep\b/, /\bclear\b/, /\bmove\b/, /\bleave\b/, /\bstep back\b/, /\bdo not\b/, /\bcome with me\b/, /\bkeep people back\b/, /\btag out\b/, /\bblock it\b/]);
-  const timelineSignal = hasPatternMatch(lower, [/\bnext step\b/, /\bnext update\b/, /\bwithin\b/, /\bby\b/, /\btoday\b/, /\bbefore\b/, /\bafter\b/, /\bminutes\b/, /\bhours\b/, /\bhear back\b/, /\bupdate you\b/]);
+  const transcriptAlreadyIncludesLatestEmployeeTurn = params.transcript[params.transcript.length - 1]?.role === "employee";
+  const priorTranscript = transcriptAlreadyIncludesLatestEmployeeTurn
+    ? params.transcript.slice(0, -1)
+    : params.transcript;
+  const priorEmployeeMessages = priorTranscript
+    .filter((turn) => turn.role === "employee")
+    .map((turn) => turn.message);
+  const allEmployeeMessages = [...priorEmployeeMessages, params.employeeResponse];
+  const priorSignals = combineEmployeeSignals(priorEmployeeMessages);
+  const combinedSignals = combineEmployeeSignals(allEmployeeMessages);
+  const objectives = buildScenarioObjectives(params.scenario);
+  const missingObjectives = objectives.filter((objective) => !objective.met(combinedSignals));
+  const newlyCompleted = objectives.filter((objective) => !objective.met(priorSignals) && objective.met(combinedSignals));
+  const stalled = newlyCompleted.length === 0 && priorEmployeeMessages.length > 0;
+  const goalResolved = missingObjectives.length === 0;
 
-  if (params.scenario.scenario_family === "emergency_response") {
-    if (!actionSignal && !params.score.ownership) {
-      return {
-        goal,
-        goalAdvanced: false,
-        goalResolved: false,
-        trustDelta: 0,
-        clarityDelta: 0,
-        reply: "What is happening right now? Is emergency response moving, and what do you need me to do immediately?",
-      };
-    }
-    if (!directionSignal) {
-      return {
-        goal,
-        goalAdvanced: true,
-        goalResolved: false,
-        trustDelta: 1,
-        clarityDelta: 1,
-        reply: "Okay. What do you need me or the people nearby to do right now while you take control?",
-      };
-    }
-    if (!timelineSignal) {
-      return {
-        goal,
-        goalAdvanced: true,
-        goalResolved: false,
-        trustDelta: 1,
-        clarityDelta: 2,
-        reply: "Okay. Keep it moving. Who is with them now, and what is the next update until care arrives?",
-      };
-    }
+  if (goalResolved) {
     return {
       goal,
       goalAdvanced: true,
       goalResolved: true,
-      trustDelta: 2,
-      clarityDelta: 2,
-      reply: "Okay. I understand. I will do that. Keep me updated until care arrives.",
-    };
-  }
-
-  if (params.scenario.department === "mod_emergency") {
-    if (!actionSignal && !params.score.ownership) {
-      return {
-        goal,
-        goalAdvanced: false,
-        goalResolved: false,
-        trustDelta: 0,
-        clarityDelta: 0,
-        reply: "What are you doing right now to control this and make it safe?",
-      };
-    }
-    if (!directionSignal && !timelineSignal) {
-      return {
-        goal,
-        goalAdvanced: true,
-        goalResolved: false,
-        trustDelta: 1,
-        clarityDelta: 1,
-        reply: "Okay. What is secured now, and what happens next from here?",
-      };
-    }
-    return {
-      goal,
-      goalAdvanced: true,
-      goalResolved: true,
-      trustDelta: 2,
-      clarityDelta: 2,
-      reply: "Okay. That sounds controlled. Keep the response moving and let me know the next update.",
-    };
-  }
-
-  if (params.scenario.department === "golf") {
-    if (firstEmployeeTurn && !discoverySignal) {
-      return {
-        goal,
-        goalAdvanced: false,
-        goalResolved: false,
-        trustDelta: 0,
-        clarityDelta: 0,
-        reply: "Before you pitch me, can you ask what I’m actually looking for?",
-      };
-    }
-    if (discoverySignal && !fitSignal) {
-      return {
-        goal,
-        goalAdvanced: true,
-        goalResolved: false,
-        trustDelta: 1,
-        clarityDelta: 1,
-        reply: "Okay. Based on that, what would you actually recommend for someone like me?",
-      };
-    }
-    if (fitSignal && !timelineSignal) {
-      return {
-        goal,
-        goalAdvanced: true,
-        goalResolved: false,
-        trustDelta: 1,
-        clarityDelta: 2,
-        reply: "That helps. What would the next step be if I wanted to move forward?",
-      };
-    }
-    return {
-      goal,
-      goalAdvanced: true,
-      goalResolved: fitSignal,
-      trustDelta: 2,
-      clarityDelta: 2,
-      reply: "Okay. That feels more specific and useful. I can picture the next step now.",
-    };
-  }
-
-  if (!params.score.empathy && !params.score.ownership) {
-    return {
-      goal,
-      goalAdvanced: false,
-      goalResolved: false,
-      trustDelta: 0,
-      clarityDelta: 0,
-      reply: "I need to know you understand the actual problem and that someone is taking ownership of it.",
-    };
-  }
-  if (!actionSignal) {
-    return {
-      goal,
-      goalAdvanced: true,
-      goalResolved: false,
-      trustDelta: 1,
-      clarityDelta: 1,
-      reply: "Okay. What are you checking or doing right now to move this forward?",
-    };
-  }
-  if (!timelineSignal) {
-    return {
-      goal,
-      goalAdvanced: true,
-      goalResolved: false,
       trustDelta: 1,
       clarityDelta: 2,
-      reply: "Alright. When exactly should I expect the next update from you?",
+      reply: buildResolvedReply(params.scenario),
+      progressSummary: `Goal resolved. Completed objectives: ${objectives.map((objective) => objective.label).join(", ")}.`,
+      nextMissing: null,
+      completedThisTurn: newlyCompleted.map((objective) => objective.label),
     };
   }
+
+  const nextObjective = missingObjectives[0];
+  const prefix = buildProgressPrefix({
+    scenario: params.scenario,
+    newlyCompletedLabels: newlyCompleted.map((objective) => objective.label),
+  });
+  const followUp = nextObjective.ask({
+    improved: newlyCompleted.length > 0,
+    stalled,
+  });
+
   return {
     goal,
-    goalAdvanced: true,
-    goalResolved: true,
-    trustDelta: 2,
-    clarityDelta: 2,
-    reply: "Okay. That gives me a clear next step and a real update to expect.",
+    goalAdvanced: newlyCompleted.length > 0,
+    goalResolved: false,
+    trustDelta: 0,
+    clarityDelta: newlyCompleted.length > 0 ? 1 : 0,
+    reply: `${prefix} ${followUp}`.trim(),
+    progressSummary: `Operational goal: ${goal.title}. Completed this turn: ${newlyCompleted.map((objective) => objective.label).join(", ") || "none"}. Still missing: ${missingObjectives.map((objective) => objective.label).join(", ")}.`,
+    nextMissing: nextObjective.label,
+    completedThisTurn: newlyCompleted.map((objective) => objective.label),
   };
 }
 
@@ -483,8 +624,8 @@ function buildLocalTurnResponse(params: {
   const priorClarity = params.priorState?.issue_clarity ?? 3;
   const trust = clampScore(
     priorTrust
-    + (score.empathy ? 2 : safetyOrUrgent ? 0 : -1)
-    + (score.ownership ? 2 : 0)
+    + (score.empathy ? 1 : safetyOrUrgent ? 0 : -1)
+    + (score.ownership ? 1 : 0)
     + (score.direct ? 1 : 0)
     + (score.critical ? -4 : 0)
     + (score.avoidant ? -2 : 0),
@@ -495,12 +636,12 @@ function buildLocalTurnResponse(params: {
     trust + goalProgress.trustDelta,
   );
   const issueClarity = clampScore(
-    priorClarity + (score.direct ? 2 : 0) + (score.policy ? 1 : 0) + (score.ownership ? 1 : 0) + (score.avoidant ? -2 : 0) + goalProgress.clarityDelta,
+    priorClarity + (score.direct ? 1 : 0) + (score.policy ? 1 : 0) + (score.avoidant ? -2 : 0) + goalProgress.clarityDelta,
   );
   const managerNeeded = score.critical || (score.escalation && !score.ownership) || (safetyOrUrgent && !score.ownership && !score.direct);
   const scenarioComplete = score.critical
     || currentTurnNumber >= params.scenario.recommended_turns
-    || (currentTurnNumber >= 3 && goalProgress.goalResolved && adjustedTrust >= 6 && issueClarity >= 6);
+    || (currentTurnNumber >= 3 && goalProgress.goalResolved && issueClarity >= 6);
   const updatedEmotion = score.critical
     ? safetyOrUrgent ? "alarmed" : "upset"
     : goalProgress.goalResolved
@@ -510,7 +651,11 @@ function buildLocalTurnResponse(params: {
       : adjustedTrust >= 5
         ? safetyOrUrgent ? "steady" : "calmer"
         : safetyOrUrgent ? "concerned" : "guarded";
-  const hiddenFact = (score.empathy || score.ownership) && employeeTurns <= 2 ? params.scenario.hidden_facts[0] || "" : "";
+  const hiddenFact = goalProgress.goalAdvanced
+    && employeeTurns <= 2
+    && (score.verification || score.explanation || score.discovery || score.recommendation || score.direction || score.safetyAction)
+      ? params.scenario.hidden_facts[0] || ""
+      : "";
   const customerReply = score.critical
     ? safetyOrUrgent
       ? "I need someone taking control right now. Tell me the immediate safety step."
@@ -1039,6 +1184,13 @@ export async function processEmployeeTurn(params: {
   const parsedPriorState = stateUpdateResultSchema.partial().safeParse(params.stateJson).success
     ? (params.stateJson as Partial<StateUpdateResult>)
     : undefined;
+  const score = scoreEmployeeMessage(params.employeeResponse);
+  const objectiveProgress = assessGoalProgress({
+    scenario: parsedScenario,
+    transcript,
+    employeeResponse: params.employeeResponse,
+    score,
+  });
 
   if (!ENV.forgeApiKey) {
     return buildLocalTurnResponse({
@@ -1069,10 +1221,10 @@ export async function processEmployeeTurn(params: {
     continue_simulation: true,
   };
 
-  const customerPrompt = `Scenario:\n${JSON.stringify(params.scenarioJson, null, 2)}\n\nConversation state:\n${JSON.stringify(priorState || defaultState, null, 2)}\n\nTranscript so far:\n${transcriptText}\n\nLatest employee response summary:\n${params.employeeResponse}`;
+  const customerPrompt = `Scenario:\n${JSON.stringify(parsedScenario, null, 2)}\n\nConversation state:\n${JSON.stringify(priorState || defaultState, null, 2)}\n\nTranscript so far:\n${transcriptText}\n\nOperational goal:\n${objectiveProgress.goal.title}\n${objectiveProgress.goal.description}\n\nResponse progress analysis:\n${objectiveProgress.progressSummary}\nNext missing objective: ${objectiveProgress.nextMissing || "none"}\nCompleted this turn: ${objectiveProgress.completedThisTurn.join(", ") || "none"}\n\nLatest employee response:\n${params.employeeResponse}\n\nInstruction: Acknowledge meaningful progress naturally, then ask only for the next missing thing if the issue is not resolved. Do not repeat an old ask once the employee has already handled it.`;
   const customerReply = await runPrompt(AI_SERVICE_REGISTRY.statefulCustomerActor, customerPrompt);
 
-  const statePrompt = `Previous state:\n${JSON.stringify(priorState || defaultState, null, 2)}\n\nScenario:\n${JSON.stringify(params.scenarioJson, null, 2)}\n\nLatest employee turn:\n${params.employeeResponse}\n\nLatest customer turn:\n${JSON.stringify(customerReply, null, 2)}`;
+  const statePrompt = `Previous state:\n${JSON.stringify(priorState || defaultState, null, 2)}\n\nScenario:\n${JSON.stringify(parsedScenario, null, 2)}\n\nOperational goal progress:\n${objectiveProgress.progressSummary}\nNext missing objective: ${objectiveProgress.nextMissing || "none"}\n\nLatest employee turn:\n${params.employeeResponse}\n\nLatest customer turn:\n${JSON.stringify(customerReply, null, 2)}`;
   const stateUpdate = await runPrompt(AI_SERVICE_REGISTRY.conversationStateUpdater, statePrompt);
 
   return {

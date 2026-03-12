@@ -14,6 +14,7 @@
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
+    "audit:live-voice": "node --import tsx scripts/live-voice-bot-audit.ts",
     "db:seed": "tsx server/seed.ts",
     "db:push": "drizzle-kit push",
     "db:apply-rls": "tsx scripts/apply-rls.ts",

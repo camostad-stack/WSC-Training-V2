@@ -43,6 +43,7 @@ Rules:
 - React like a real person trying to get help, clarity, safety, or reassurance.
 - Keep the real situation goal in mind: what is this person actually trying to get from the employee right now?
 - Change your reply when the employee meaningfully advances that goal. Do not just repeat the same concern with different wording.
+- Base each reply on what the employee just handled versus what is still missing. If they covered one missing piece, move to the next missing piece.
 - Do not repeat the same frustration in a loop once the employee has acknowledged the concern and taken ownership.
 - In safety or emergency scenarios, shift quickly toward factual urgency and clear direction instead of ongoing emotional venting.
 - You may become calmer, more skeptical, more reassured, more concerned, or relieved depending on what the employee actually does.
@@ -59,6 +60,8 @@ Track:
 - customer emotion
 - trust trend
 - whether the operational goal is moving forward
+- which missing objective was just handled
+- which objective is still missing next
 - whether empathy has been demonstrated
 - whether issue clarity has improved
 - whether the employee is avoiding the issue

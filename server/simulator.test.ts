@@ -355,6 +355,7 @@ describe("simulator.customerReply", () => {
           initial_emotion: "alarmed",
           patience_level: "low",
         },
+        hidden_facts: ["The employee should direct the witness and stabilize until care arrives."],
       }),
       transcript: [
         { role: "customer", message: "Someone collapsed near cardio." },
@@ -362,9 +363,9 @@ describe("simulator.customerReply", () => {
       employeeResponse: "I am activating emergency response now and taking control of this.",
     });
 
-    expect(result.customerReply.customer_reply).toContain("what do you need me");
+    expect(result.customerReply.customer_reply.toLowerCase()).toContain("what do you need");
     expect(result.customerReply.customer_reply).not.toContain("frustration");
-    expect(result.customerReply.updated_emotion).toBe("concerned");
+    expect(["concerned", "steady"]).toContain(result.customerReply.updated_emotion);
   });
 
   it("pushes golf conversations toward discovery before pitching", async () => {
@@ -382,6 +383,7 @@ describe("simulator.customerReply", () => {
           initial_emotion: "skeptical",
           patience_level: "moderate",
         },
+        hidden_facts: ["The prospect needs a clear recommendation that fits their goals."],
       }),
       transcript: [
         { role: "customer", message: "Why is this worth it for me?" },
@@ -389,8 +391,166 @@ describe("simulator.customerReply", () => {
       employeeResponse: "We have a great club with a lot of value and premium amenities.",
     });
 
-    expect(result.customerReply.customer_reply).toContain("ask what I’m actually looking for");
+    expect(result.customerReply.customer_reply.toLowerCase()).toMatch(/pitching me|actually looking for/);
     expect(result.stateUpdate.continue_simulation).toBe(true);
+  });
+
+  it("moves front-desk follow-up questions forward as the employee handles each missing objective", async () => {
+    const caller = appRouter.createCaller(createAuthContext());
+    const scenario = createScenarioFixture();
+
+    const firstTurn = await caller.simulator.customerReply({
+      scenarioJson: scenario,
+      transcript: [
+        { role: "customer", message: "I need to know why I was charged twice." },
+      ],
+      employeeResponse: "I can see why that would be frustrating, and I am taking ownership of this.",
+    });
+
+    expect(firstTurn.customerReply.customer_reply.toLowerCase()).toContain("checking or confirming");
+
+    const secondTurn = await caller.simulator.customerReply({
+      scenarioJson: scenario,
+      transcript: [
+        { role: "customer", message: "I need to know why I was charged twice." },
+        { role: "employee", message: "I can see why that would be frustrating, and I am taking ownership of this." },
+        { role: "customer", message: firstTurn.customerReply.customer_reply, emotion: firstTurn.customerReply.updated_emotion },
+      ],
+      employeeResponse: "I am pulling up the ledger now to verify which charge is pending and which one is final.",
+    });
+
+    expect(secondTurn.customerReply.customer_reply).toContain("What is the next concrete step from here for me");
+    expect(secondTurn.customerReply.customer_reply).not.toContain("checking or confirming");
+
+    const thirdTurn = await caller.simulator.customerReply({
+      scenarioJson: scenario,
+      transcript: [
+        { role: "customer", message: "I need to know why I was charged twice." },
+        { role: "employee", message: "I can see why that would be frustrating, and I am taking ownership of this." },
+        { role: "customer", message: firstTurn.customerReply.customer_reply, emotion: firstTurn.customerReply.updated_emotion },
+        { role: "employee", message: "I am pulling up the ledger now to verify which charge is pending and which one is final." },
+        { role: "customer", message: secondTurn.customerReply.customer_reply, emotion: secondTurn.customerReply.updated_emotion },
+      ],
+      employeeResponse: "I will reverse the pending charge now and email the confirmation within 15 minutes.",
+    });
+
+    expect(thirdTurn.customerReply.customer_reply).not.toContain("checking or confirming");
+    expect(thirdTurn.customerReply.customer_reply).not.toContain("What happens next for me now");
+    expect(thirdTurn.customerReply.updated_emotion).toMatch(/reassured|calmer|steady/);
+  });
+
+  it("moves emergency follow-up from control to direction to update instead of repeating the same ask", async () => {
+    const caller = appRouter.createCaller(createAuthContext());
+    const scenario = createScenarioFixture({
+      department: "mod_emergency",
+      employee_role: "Manager on Duty",
+      scenario_family: "emergency_response",
+      customer_persona: {
+        name: "Alicia Gomez",
+        age_band: "30-40",
+        membership_context: "Witness to an urgent incident",
+        communication_style: "Alarmed and urgent",
+        initial_emotion: "alarmed",
+        patience_level: "low",
+      },
+      hidden_facts: ["The witness needs direct instructions and updates until care arrives."],
+    });
+
+    const firstTurn = await caller.simulator.customerReply({
+      scenarioJson: scenario,
+      transcript: [
+        { role: "customer", message: "Someone collapsed near cardio." },
+      ],
+      employeeResponse: "I am activating emergency response now and taking control of this.",
+    });
+
+    expect(firstTurn.customerReply.customer_reply.toLowerCase()).toContain("what do you need");
+
+    const secondTurn = await caller.simulator.customerReply({
+      scenarioJson: scenario,
+      transcript: [
+        { role: "customer", message: "Someone collapsed near cardio." },
+        { role: "employee", message: "I am activating emergency response now and taking control of this." },
+        { role: "customer", message: firstTurn.customerReply.customer_reply, emotion: firstTurn.customerReply.updated_emotion },
+      ],
+      employeeResponse: "Stay with them if it is safe, keep the area clear, and wave emergency response to the cardio floor.",
+    });
+
+    expect(secondTurn.customerReply.customer_reply).toContain("next update until care arrives");
+    expect(secondTurn.customerReply.customer_reply).not.toContain("What do you need me to do right now");
+
+    const thirdTurn = await caller.simulator.customerReply({
+      scenarioJson: scenario,
+      transcript: [
+        { role: "customer", message: "Someone collapsed near cardio." },
+        { role: "employee", message: "I am activating emergency response now and taking control of this." },
+        { role: "customer", message: firstTurn.customerReply.customer_reply, emotion: firstTurn.customerReply.updated_emotion },
+        { role: "employee", message: "Stay with them if it is safe, keep the area clear, and wave emergency response to the cardio floor." },
+        { role: "customer", message: secondTurn.customerReply.customer_reply, emotion: secondTurn.customerReply.updated_emotion },
+      ],
+      employeeResponse: "Emergency response is on the way, and I will keep you updated until care arrives.",
+    });
+
+    expect(thirdTurn.customerReply.customer_reply).toContain("Keep me updated until care arrives");
+    expect(thirdTurn.stateUpdate.continue_simulation).toBe(false);
+  });
+
+  it("moves golf follow-up from discovery to recommendation to close instead of looping on discovery", async () => {
+    const caller = appRouter.createCaller(createAuthContext());
+    const scenario = createScenarioFixture({
+      department: "golf",
+      employee_role: "Golf Membership Advisor",
+      scenario_family: "hesitant_prospect",
+      customer_persona: {
+        name: "Liam Hart",
+        age_band: "35-45",
+        membership_context: "Prospect comparing clubs",
+        communication_style: "Curious but hesitant",
+        initial_emotion: "skeptical",
+        patience_level: "moderate",
+      },
+      situation_summary: "A prospect is interested but unsure the membership fits their routine.",
+      opening_line: "I like the club, but I do not know if this actually fits me.",
+      hidden_facts: ["The prospect needs a clear fit recommendation and a clean next step."],
+    });
+
+    const firstTurn = await caller.simulator.customerReply({
+      scenarioJson: scenario,
+      transcript: [
+        { role: "customer", message: "I like the club, but I do not know if this actually fits me." },
+      ],
+      employeeResponse: "We have a great club with a lot of amenities and value.",
+    });
+
+    expect(firstTurn.customerReply.customer_reply.toLowerCase()).toMatch(/pitching me|actually looking for/);
+
+    const secondTurn = await caller.simulator.customerReply({
+      scenarioJson: scenario,
+      transcript: [
+        { role: "customer", message: "I like the club, but I do not know if this actually fits me." },
+        { role: "employee", message: "We have a great club with a lot of amenities and value." },
+        { role: "customer", message: firstTurn.customerReply.customer_reply, emotion: firstTurn.customerReply.updated_emotion },
+      ],
+      employeeResponse: "Welcome in. What are you hoping to get out of the club most right now?",
+    });
+
+    expect(secondTurn.customerReply.customer_reply).toContain("what would you actually recommend");
+    expect(secondTurn.customerReply.customer_reply).not.toContain("ask what I’m actually looking for");
+
+    const thirdTurn = await caller.simulator.customerReply({
+      scenarioJson: scenario,
+      transcript: [
+        { role: "customer", message: "I like the club, but I do not know if this actually fits me." },
+        { role: "employee", message: "We have a great club with a lot of amenities and value." },
+        { role: "customer", message: firstTurn.customerReply.customer_reply, emotion: firstTurn.customerReply.updated_emotion },
+        { role: "employee", message: "Welcome in. What are you hoping to get out of the club most right now?" },
+        { role: "customer", message: secondTurn.customerReply.customer_reply, emotion: secondTurn.customerReply.updated_emotion },
+      ],
+      employeeResponse: "Based on that, I recommend the flexible range membership, and I can get the next step moving for you today.",
+    });
+
+    expect(thirdTurn.customerReply.customer_reply).toContain("I can picture the next step now");
+    expect(thirdTurn.customerReply.customer_reply).not.toContain("what would you actually recommend");
   });
 });
 

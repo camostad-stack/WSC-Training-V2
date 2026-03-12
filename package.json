@@ -9,11 +9,12 @@
   "scripts": {
     "dev": "NODE_ENV=development tsx watch server/_core/index.ts",
     "build": "vite build && esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
-    "build:vercel": "vite build",
+    "build:vercel": "node scripts/build-vercel-handler.mjs && vite build",
     "start": "NODE_ENV=production node dist/index.js",
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
+    "audit:customer-sim": "node --import tsx scripts/customer-simulation-harness.ts",
     "audit:live-voice": "node --import tsx scripts/live-voice-bot-audit.ts",
     "db:seed": "tsx server/seed.ts",
     "db:push": "drizzle-kit push",

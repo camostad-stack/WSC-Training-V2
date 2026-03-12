@@ -4,9 +4,49 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
-import { Loader2, Users, AlertTriangle, Clock, BarChart3, ArrowRight } from "lucide-react";
+import {
+  Loader2,
+  Users,
+  AlertTriangle,
+  Clock,
+  BarChart3,
+  ArrowRight,
+  ChevronRight,
+} from "lucide-react";
 import { useMemo } from "react";
 import { familyLabels } from "@/features/simulator/config";
+
+function DashboardNavCard(props: {
+  icon: typeof Users;
+  iconClassName: string;
+  title: string;
+  value: number;
+  detail: string;
+  onClick: () => void;
+}) {
+  const Icon = props.icon;
+
+  return (
+    <button
+      onClick={props.onClick}
+      className="w-full text-left rounded-xl border border-border bg-card transition-colors hover:border-teal/40 hover:bg-secondary/20"
+    >
+      <CardContent className="pt-4 pb-4">
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${props.iconClassName}`}>
+            <Icon className="h-5 w-5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-mono text-2xl font-bold">{props.value}</div>
+            <div className="text-xs text-muted-foreground">{props.title}</div>
+            <div className="text-[11px] text-muted-foreground mt-1">{props.detail}</div>
+          </div>
+          <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+        </div>
+      </CardContent>
+    </button>
+  );
+}
 
 export default function ManagerDashboard() {
   const { user } = useAuth();
@@ -26,7 +66,6 @@ export default function ManagerDashboard() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-semibold">Dashboard</h1>
         <p className="text-sm text-muted-foreground mt-1">
@@ -50,66 +89,44 @@ export default function ManagerDashboard() {
         </Card>
       ) : (
         <>
-          {/* Stats Row */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <Card className="bg-card border-border">
-              <CardContent className="pt-4 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-teal/10 flex items-center justify-center">
-                    <Users className="h-5 w-5 text-teal" />
-                  </div>
-                  <div>
-                    <div className="font-mono text-2xl font-bold">{teamData.length}</div>
-                    <div className="text-xs text-muted-foreground">Team Members</div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <DashboardNavCard
+              icon={Users}
+              iconClassName="bg-teal/10 text-teal"
+              title="Team Members"
+              value={teamData.length}
+              detail="Open the team roster"
+              onClick={() => setLocation("/manage/team")}
+            />
 
-            <Card className="bg-card border-border">
-              <CardContent className="pt-4 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center">
-                    <Clock className="h-5 w-5 text-amber" />
-                  </div>
-                  <div>
-                    <div className="font-mono text-2xl font-bold">{pendingReviews.length}</div>
-                    <div className="text-xs text-muted-foreground">Pending Reviews</div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <DashboardNavCard
+              icon={Clock}
+              iconClassName="bg-amber-500/10 text-amber"
+              title="Pending Reviews"
+              value={pendingReviews.length}
+              detail="Open the review queue"
+              onClick={() => setLocation("/manage/sessions?filter=pending")}
+            />
 
-            <Card className="bg-card border-border">
-              <CardContent className="pt-4 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center">
-                    <AlertTriangle className="h-5 w-5 text-red-400" />
-                  </div>
-                  <div>
-                    <div className="font-mono text-2xl font-bold">{flaggedSessions.length}</div>
-                    <div className="text-xs text-muted-foreground">Flagged Sessions</div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <DashboardNavCard
+              icon={AlertTriangle}
+              iconClassName="bg-red-500/10 text-red-400"
+              title="Flagged Sessions"
+              value={flaggedSessions.length}
+              detail="Open flagged sessions"
+              onClick={() => setLocation("/manage/sessions?filter=flagged")}
+            />
 
-            <Card className="bg-card border-border">
-              <CardContent className="pt-4 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center">
-                    <BarChart3 className="h-5 w-5 text-green-400" />
-                  </div>
-                  <div>
-                    <div className="font-mono text-2xl font-bold">{sessionsData.length}</div>
-                    <div className="text-xs text-muted-foreground">Total Sessions</div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <DashboardNavCard
+              icon={BarChart3}
+              iconClassName="bg-green-500/10 text-green-400"
+              title="Total Sessions"
+              value={sessionsData.length}
+              detail="Open all session history"
+              onClick={() => setLocation("/manage/sessions?filter=all")}
+            />
           </div>
 
-          {/* Pending Reviews - Most important for manager */}
           {pendingReviews.length > 0 ? (
             <Card className="bg-card border-amber-500/20">
               <CardHeader className="pb-3">
@@ -117,7 +134,7 @@ export default function ManagerDashboard() {
                   <span className="flex items-center gap-2">
                     <Clock className="h-4 w-4" /> Needs Your Review
                   </span>
-                  <Button variant="ghost" size="sm" onClick={() => setLocation("/manage/sessions")} className="text-teal text-xs gap-1">
+                  <Button variant="ghost" size="sm" onClick={() => setLocation("/manage/sessions?filter=pending")} className="text-teal text-xs gap-1">
                     View All <ArrowRight className="h-3 w-3" />
                   </Button>
                 </CardTitle>
@@ -165,19 +182,55 @@ export default function ManagerDashboard() {
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="text-sm text-muted-foreground">No sessions are waiting for review right now.</p>
-                <Button variant="outline" onClick={() => setLocation("/manage/sessions")}>
+                <Button variant="outline" onClick={() => setLocation("/manage/sessions?filter=pending")}>
                   Open Session Queue
                 </Button>
               </CardContent>
             </Card>
           )}
 
-          {/* Recent Sessions */}
+          {flaggedSessions.length > 0 && (
+            <Card className="bg-card border-red-500/20">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-mono tracking-wider uppercase text-red-300 flex items-center justify-between">
+                  <span className="flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4" /> Flagged Sessions
+                  </span>
+                  <Button variant="ghost" size="sm" onClick={() => setLocation("/manage/sessions?filter=flagged")} className="text-teal text-xs gap-1">
+                    Open Queue <ArrowRight className="h-3 w-3" />
+                  </Button>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {flaggedSessions.slice(0, 3).map((s: any) => (
+                    <button
+                      key={s.id}
+                      onClick={() => setLocation(`/manage/sessions/${s.id}`)}
+                      className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-secondary/30 transition-colors text-left"
+                    >
+                      <AlertTriangle className="h-4 w-4 text-red-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm truncate">
+                          {s.employeeName || "Unknown"} — {familyLabels[s.scenarioFamily || ""] || (s.scenarioFamily || "session").replace(/_/g, " ")}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {new Date(s.createdAt).toLocaleDateString()} · Score: {s.overallScore ?? "—"}
+                        </div>
+                      </div>
+                      <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <Card className="bg-card border-border">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground flex items-center justify-between">
                 Recent Sessions
-                <Button variant="ghost" size="sm" onClick={() => setLocation("/manage/sessions")} className="text-teal text-xs gap-1">
+                <Button variant="ghost" size="sm" onClick={() => setLocation("/manage/sessions?filter=all")} className="text-teal text-xs gap-1">
                   View All <ArrowRight className="h-3 w-3" />
                 </Button>
               </CardTitle>

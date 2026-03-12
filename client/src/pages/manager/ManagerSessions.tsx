@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useLocation } from "wouter";
 import { Loader2, AlertTriangle, ChevronRight } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { familyLabels } from "@/features/simulator/config";
 
 const reviewFilters = [
@@ -16,12 +16,28 @@ const reviewFilters = [
 ] as const;
 
 export default function ManagerSessions() {
-  const [, setLocation] = useLocation();
-  const [reviewFilter, setReviewFilter] = useState<(typeof reviewFilters)[number]["value"]>("pending");
+  const [location, setLocation] = useLocation();
+  const [reviewFilter, setReviewFilter] = useState<(typeof reviewFilters)[number]["value"]>(() => {
+    if (typeof window === "undefined") return "pending";
+    const filter = new URLSearchParams(window.location.search).get("filter");
+    return reviewFilters.some((item) => item.value === filter) ? (filter as (typeof reviewFilters)[number]["value"]) : "pending";
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const filter = new URLSearchParams(window.location.search).get("filter");
+    if (reviewFilters.some((item) => item.value === filter)) {
+      setReviewFilter(filter as (typeof reviewFilters)[number]["value"]);
+    }
+  }, [location]);
 
   const queryInput = useMemo(() => ({
     limit: 50,
-    ...(reviewFilter !== "all" ? { reviewStatus: reviewFilter } : {}),
+    ...(reviewFilter === "flagged"
+      ? { isFlagged: true }
+      : reviewFilter !== "all"
+        ? { reviewStatus: reviewFilter }
+        : {}),
   }), [reviewFilter]);
 
   const sessions = trpc.sessions.teamSessions.useQuery(queryInput, { retry: false });
@@ -58,7 +74,14 @@ export default function ManagerSessions() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <Select value={reviewFilter} onValueChange={(value) => setReviewFilter(value as (typeof reviewFilters)[number]["value"])}>
+          <Select
+            value={reviewFilter}
+            onValueChange={(value) => {
+              const next = value as (typeof reviewFilters)[number]["value"];
+              setReviewFilter(next);
+              setLocation(`/manage/sessions?filter=${next}`);
+            }}
+          >
             <SelectTrigger className="w-48 bg-card border-border">
               <SelectValue placeholder="Filter by status" />
             </SelectTrigger>

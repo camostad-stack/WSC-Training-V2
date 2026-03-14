@@ -18,6 +18,7 @@ import {
 } from "@/features/live-voice/voice-renderer";
 import { playCustomerAudioTurn } from "@/features/live-voice/audio-playback";
 import { resolveRealtimeResponseCompletion } from "@/features/live-voice/realtime-control";
+import { buildRealtimeResponseCreateEvent, extractRealtimeErrorMessage } from "@/features/live-voice/realtime-protocol";
 import {
   appendBlockedPrematureClosureToState,
   deriveConversationRuntimeView,
@@ -789,13 +790,10 @@ export function useLiveVoiceSession(params: {
           terminalValidated: terminalOutcome.isTerminal,
         },
       });
-      sendClientEvent({
-        type: "response.create",
-        response: {
-          modalities: sessionBlueprintRef.current?.responseModalities || ["audio", "text"],
-          instructions: parsed?.realtimeResponseInstructions,
-        },
-      });
+      sendClientEvent(buildRealtimeResponseCreateEvent({
+        outputModalities: sessionBlueprintRef.current?.responseModalities || ["audio", "text"],
+        instructions: parsed?.realtimeResponseInstructions,
+      }));
       return;
     }
 
@@ -1119,7 +1117,7 @@ export function useLiveVoiceSession(params: {
       return;
     }
     if (type === "error") {
-      const message = extractTextFromUnknown(event.error) ?? "Realtime session reported an error.";
+      const message = extractRealtimeErrorMessage(event) ?? "Realtime session reported an error.";
       setLastError(message);
       setConnectionState("error");
       setAssistantPhase("error");
@@ -1332,13 +1330,10 @@ export function useLiveVoiceSession(params: {
       dataChannelRef.current = dataChannel;
       dataChannel.onopen = () => {
         appendTimingMarker("data_channel_open");
-        sendClientEvent({
-          type: "response.create",
-          response: {
-            modalities: credentialResponse.responseModalities,
-            instructions: credentialResponse.openingResponseInstructions,
-          },
-        });
+        sendClientEvent(buildRealtimeResponseCreateEvent({
+          outputModalities: credentialResponse.responseModalities,
+          instructions: credentialResponse.openingResponseInstructions,
+        }));
       };
       dataChannel.onmessage = (messageEvent) => {
         try {

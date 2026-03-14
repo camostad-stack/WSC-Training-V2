@@ -114,13 +114,11 @@ export function buildLiveVoiceInstructions(scenario: ScenarioDirectorResult, emp
   });
 }
 
-function buildConnectionUrl(model: string) {
+function buildConnectionUrl() {
   if (!ENV.forgeApiUrl) {
-    return `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
+    return "https://api.openai.com/v1/realtime/calls";
   }
-  const url = new URL("v1/realtime", buildRealtimeBaseUrl());
-  url.searchParams.set("model", model);
-  return url.toString();
+  return new URL("v1/realtime/calls", buildRealtimeBaseUrl()).toString();
 }
 
 export async function createLiveVoiceSessionCredentials(
@@ -163,7 +161,7 @@ export async function createLiveVoiceSessionCredentials(
       mode: "live_voice",
       model,
       voice,
-      connectionUrl: buildConnectionUrl(model),
+      connectionUrl: buildConnectionUrl(),
       sessionSeed,
       turnControl: "backend_validated_manual",
       allowLocalBrowserFallback: ENV.liveVoiceAllowLocalBrowserFallback,
@@ -186,7 +184,7 @@ export async function createLiveVoiceSessionCredentials(
       mode: "live_voice",
       model,
       voice,
-      connectionUrl: buildConnectionUrl(model),
+      connectionUrl: buildConnectionUrl(),
       sessionSeed,
       turnControl: "backend_validated_manual",
       allowLocalBrowserFallback: ENV.liveVoiceAllowLocalBrowserFallback,
@@ -247,7 +245,7 @@ export async function createLiveVoiceSessionCredentials(
       mode: "live_voice",
       model,
       voice,
-      connectionUrl: buildConnectionUrl(model),
+      connectionUrl: buildConnectionUrl(),
       sessionSeed,
       turnControl: "backend_validated_manual",
       allowLocalBrowserFallback: ENV.liveVoiceAllowLocalBrowserFallback,
@@ -280,7 +278,7 @@ export async function createLiveVoiceSessionCredentials(
         mode: "live_voice",
         model,
         voice,
-        connectionUrl: buildConnectionUrl(model),
+        connectionUrl: buildConnectionUrl(),
         sessionSeed,
         turnControl: "backend_validated_manual",
         allowLocalBrowserFallback: ENV.liveVoiceAllowLocalBrowserFallback,
@@ -302,7 +300,7 @@ export async function createLiveVoiceSessionCredentials(
       mode: "live_voice",
       model,
       voice,
-      connectionUrl: buildConnectionUrl(model),
+      connectionUrl: buildConnectionUrl(),
       clientSecret,
       expiresAt,
       sessionId: json.id ?? null,
@@ -325,7 +323,7 @@ export async function createLiveVoiceSessionCredentials(
       mode: "live_voice",
       model,
       voice,
-      connectionUrl: buildConnectionUrl(model),
+      connectionUrl: buildConnectionUrl(),
       sessionSeed,
       turnControl: "backend_validated_manual",
       allowLocalBrowserFallback: ENV.liveVoiceAllowLocalBrowserFallback,

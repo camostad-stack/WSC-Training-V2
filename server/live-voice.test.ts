@@ -130,7 +130,7 @@ describe("createLiveVoiceSessionCredentials", () => {
 
     expect(result.enabled).toBe(true);
     expect(result.clientSecret).toBe("ephemeral_123");
-    expect(result.connectionUrl).toContain("/v1/realtime");
+    expect(result.connectionUrl).toContain("/v1/realtime/calls");
     expect(result.transport).toBe("openai-realtime-webrtc");
     expect(result.audioOutputMode).toBe("external-rendered");
     expect(result.responseModalities).toEqual(["text"]);

@@ -15,6 +15,7 @@ export const ENV = {
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
   openaiApiKey: process.env.OPENAI_API_KEY ?? process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  llmModel: process.env.LLM_MODEL ?? process.env.OPENAI_LLM_MODEL ?? "",
   openaiSpeechBaseUrl: process.env.OPENAI_SPEECH_BASE_URL ?? process.env.BUILT_IN_FORGE_API_URL ?? "https://api.openai.com/v1",
   openaiSpeechModel: process.env.OPENAI_SPEECH_MODEL ?? "gpt-4o-mini-tts",
   realtimeModel: process.env.REALTIME_MODEL ?? "gpt-realtime",

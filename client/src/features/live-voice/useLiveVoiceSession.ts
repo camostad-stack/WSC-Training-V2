@@ -1368,7 +1368,9 @@ export function useLiveVoiceSession(params: {
       });
 
       if (!sdpResponse.ok) {
-        throw new Error(`SDP exchange failed (${sdpResponse.status} ${sdpResponse.statusText})`);
+        const errorBody = await sdpResponse.text().catch(() => "");
+        const suffix = errorBody ? `: ${errorBody.slice(0, 400)}` : "";
+        throw new Error(`SDP exchange failed (${sdpResponse.status} ${sdpResponse.statusText})${suffix}`);
       }
 
       const answerSdp = await sdpResponse.text();

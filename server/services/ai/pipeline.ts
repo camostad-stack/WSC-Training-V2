@@ -36,7 +36,24 @@ import { PromptExecutionError, type PipelineFailure } from "./errors";
 import { runPrompt } from "./prompt-runner";
 import { AI_SERVICE_REGISTRY } from "./registry";
 import { selectRelevantPolicies } from "../policy-matching";
-import { departmentLabels, familyLabels, getScenarioGoal, scenarioFamiliesByDepartment } from "../../../shared/wsc-content";
+import {
+  buildDefaultConversationState,
+  buildSimulationPromptContext,
+  formatPromptContext,
+  simulateCustomerTurn,
+} from "../simulation/engine";
+import { buildCustomerActorRuntimeContext } from "../simulation/customer-actor";
+import { analyzeEmployeeUtterance } from "../simulation/analysis";
+import {
+  departmentLabels,
+  deriveCompletionCriteria,
+  deriveFailureCriteria,
+  deriveScenarioHumanContext,
+  familyLabels,
+  getScenarioGoal,
+  scenarioFamiliesByDepartment,
+} from "../../../shared/wsc-content";
+import { evaluateConversationTerminalState, getConversationOutcomeState, isTerminalConversationState } from "../../../shared/conversation-outcome";
 import { WSC_SCENARIO_TEMPLATE_SEEDS } from "../../wsc-seed-data";
 
 const DEFAULT_CATEGORY_SCORES = {
@@ -52,6 +69,8 @@ const DEFAULT_CATEGORY_SCORES = {
   closing_control: 0,
 } as const;
 
+type CategoryScores = EvaluationResult["category_scores"];
+
 export interface EvaluationPipelineResult {
   processingStatus: "completed" | "invalid" | "reprocess";
   failure?: PipelineFailure;
@@ -65,7 +84,7 @@ export interface EvaluationPipelineResult {
 }
 
 function clampRecommendedTurns(value?: number) {
-  return Math.max(3, Math.min(5, value ?? 4));
+  return Math.max(2, Math.min(12, value ?? 4));
 }
 
 function clampScore(value: number, min = 0, max = 10) {
@@ -76,6 +95,44 @@ function formatTranscript(transcript: TranscriptTurn[]) {
   return transcript
     .map(turn => `${turn.role === "customer" ? "Customer" : "Employee"}${turn.emotion ? ` [${turn.emotion}]` : ""}: ${turn.message}`)
     .join("\n");
+}
+
+function deriveAnalysesFromTranscript(params: {
+  scenarioJson: ScenarioDirectorResult;
+  transcript: TranscriptTurn[];
+}) {
+  const analyses: StateUpdateResult["latest_employee_analysis"][] = [];
+  const priorPromisesMade: string[] = [];
+  const previousEmployeeMessages: string[] = [];
+  let latestCustomerMessage: string | undefined;
+
+  for (const turn of params.transcript) {
+    if (turn.role === "customer") {
+      latestCustomerMessage = turn.message;
+      continue;
+    }
+
+    const analysis = analyzeEmployeeUtterance(turn.message, params.scenarioJson, {
+      latestCustomerMessage,
+      priorPromisesMade,
+      previousEmployeeMessages,
+      scenarioGoal: getScenarioGoal(params.scenarioJson).title,
+    });
+
+    analyses.push(analysis);
+    previousEmployeeMessages.push(turn.message);
+
+    if (
+      analysis.explicitNextStep
+      || analysis.explicitTimeline
+      || analysis.explicitManagerMention
+      || analysis.explicitRecommendation
+    ) {
+      priorPromisesMade.push(turn.message);
+    }
+  }
+
+  return analyses;
 }
 
 function chooseScenarioSeed(params: {
@@ -100,6 +157,10 @@ function buildLocalScenario(params: {
   scenarioFamily?: string;
 }): ScenarioDirectorResult {
   const seed = chooseScenarioSeed(params);
+  const humanContext = deriveScenarioHumanContext({
+    department: seed.department,
+    scenario_family: seed.scenarioFamily,
+  });
   return scenarioDirectorResultSchema.parse({
     scenario_id: `local-${seed.scenarioFamily}-${seed.difficulty}`,
     department: seed.department,
@@ -110,12 +171,34 @@ function buildLocalScenario(params: {
     situation_summary: seed.situationSummary,
     opening_line: seed.openingLine,
     hidden_facts: seed.hiddenFacts || [],
+    motive: humanContext.motive,
+    hidden_context: humanContext.hidden_context,
+    personality_style: humanContext.personality_style,
+    past_history: humanContext.past_history,
+    pressure_context: humanContext.pressure_context,
+    friction_points: humanContext.friction_points,
+    emotional_triggers: humanContext.emotional_triggers,
+    likely_assumptions: humanContext.likely_assumptions,
+    what_hearing_them_out_sounds_like: humanContext.what_hearing_them_out_sounds_like,
+    credible_next_steps: humanContext.credible_next_steps,
+    calm_down_if: humanContext.calm_down_if,
+    lose_trust_if: humanContext.lose_trust_if,
     approved_resolution_paths: seed.approvedResolutionPaths || [],
     required_behaviors: seed.requiredBehaviors || [],
     critical_errors: seed.criticalErrors || [],
     branch_logic: seed.branchLogic || {},
     emotion_progression: seed.emotionProgression || {},
     completion_rules: seed.completionRules || {},
+    completion_criteria: deriveCompletionCriteria({
+      approvedResolutionPaths: seed.approvedResolutionPaths,
+      requiredBehaviors: seed.requiredBehaviors,
+      completionRules: seed.completionRules,
+      completionCriteria: seed.completionCriteria,
+    }),
+    failure_criteria: deriveFailureCriteria({
+      completionRules: seed.completionRules,
+      failureCriteria: seed.failureCriteria,
+    }),
     recommended_turns: clampRecommendedTurns(seed.recommendedTurns),
   });
 }
@@ -647,9 +730,28 @@ function buildLocalTurnResponse(params: {
     priorClarity + (score.direct ? 1 : 0) + (score.policy ? 1 : 0) + (score.avoidant ? -2 : 0) + goalProgress.clarityDelta,
   );
   const managerNeeded = score.critical || (score.escalation && !score.ownership) || (safetyOrUrgent && !score.ownership && !score.direct);
-  const scenarioComplete = score.critical
-    || currentTurnNumber >= params.scenario.recommended_turns
-    || (currentTurnNumber >= 3 && goalProgress.goalResolved && issueClarity >= 6);
+  const acceptedNextStep = goalProgress.goalResolved && score.ownership && !score.avoidant;
+  const validRedirect = managerNeeded && score.escalation && !score.avoidant && !score.critical;
+  const nextStepOwner = acceptedNextStep || validRedirect
+    ? (score.escalation ? "manager" : score.ownership ? "employee" : "")
+    : "";
+  const nextStepTimeline = score.timeline ? "employee provided a concrete timeline" : "";
+  const escalationValidity = validRedirect && nextStepOwner && nextStepTimeline ? "valid" : score.escalation ? "potential" : "invalid";
+  const unresolvedSubissues = goalProgress.goalResolved && acceptedNextStep ? [] : params.scenario.completion_criteria || [];
+  const unmetCompletionCriteria = [...unresolvedSubissues];
+  const legacyStateCandidate = {
+    goal_status: goalProgress.goalResolved && acceptedNextStep ? "RESOLVED" : goalProgress.goalAdvanced ? "PARTIALLY_RESOLVED" : "ACTIVE",
+    terminal_outcome_state: goalProgress.goalResolved && acceptedNextStep ? "RESOLVED" : "ACTIVE",
+    root_issue_status: goalProgress.goalResolved && acceptedNextStep ? "RESOLVED" : goalProgress.goalAdvanced ? "PARTIALLY_ADDRESSED" : "UNRESOLVED",
+    accepted_next_step: acceptedNextStep,
+    next_step_owner: nextStepOwner,
+    next_step_timeline: nextStepTimeline,
+    valid_redirect: validRedirect,
+    escalation_validity: escalationValidity,
+    unresolved_subissues: unresolvedSubissues,
+    unmet_completion_criteria: unmetCompletionCriteria,
+  } as const;
+  const scenarioComplete = evaluateConversationTerminalState(legacyStateCandidate).isTerminal;
   const updatedEmotion = score.critical
     ? safetyOrUrgent ? "alarmed" : "upset"
     : goalProgress.goalResolved
@@ -695,6 +797,12 @@ function buildLocalTurnResponse(params: {
       emotion_state: updatedEmotion,
       trust_level: adjustedTrust,
       issue_clarity: issueClarity,
+      initial_customer_complaint: params.scenario.opening_line,
+      current_customer_goal: getScenarioGoal(params.scenario).title,
+      root_issue_status: legacyStateCandidate.root_issue_status,
+      discovered_facts: hiddenFact ? [hiddenFact] : [],
+      unresolved_subissues: unresolvedSubissues,
+      employee_promises_made: score.timeline ? ["employee promised a follow-up timeline"] : [],
       employee_flags: {
         showed_empathy: score.empathy,
         answered_directly: score.direct,
@@ -706,50 +814,485 @@ function buildLocalTurnResponse(params: {
       escalation_required: managerNeeded,
       scenario_risk_level: score.critical ? "high" : trust >= 6 ? "low" : "moderate",
       continue_simulation: !scenarioComplete,
+      customer_goal: getScenarioGoal(params.scenario).title,
+      goal_status: legacyStateCandidate.goal_status,
+      terminal_outcome_state: legacyStateCandidate.terminal_outcome_state,
+      accepted_next_step: acceptedNextStep,
+      next_step_owner: nextStepOwner,
+      next_step_timeline: nextStepTimeline,
+      valid_redirect: validRedirect,
+      escalation_validity: escalationValidity,
+      premature_closure_detected: false,
+      unmet_completion_criteria: unmetCompletionCriteria,
+      unresolved_questions: unresolvedSubissues,
+      outcome_summary: scenarioComplete ? "Legacy local fallback reached a validated terminal state." : "Legacy local fallback still sees the conversation as active.",
     }),
   };
+}
+
+type ScoreDimensions = {
+  interaction_quality: number;
+  operational_effectiveness: number;
+  outcome_quality: number;
+};
+
+type OutcomeEvidence = {
+  finalOutcomeState: string;
+  acceptedNextStep: boolean;
+  validRedirect: boolean;
+  prematureClosureDetected: boolean;
+  unresolvedCriteria: string[];
+  customerImproved: boolean;
+  deEscalated: boolean;
+  addressedConcern: boolean;
+  addressedConcernRate: number;
+  realNextStep: boolean;
+  realNextStepRate: number;
+  solvedOrRedirected: boolean;
+  customerFeltHeard: boolean;
+  customerFeltHeardRate: number;
+  ownershipRate: number;
+  avoidantRate: number;
+  disrespectRate: number;
+  policyGroundedRate: number;
+  resolutionTurnRate: number;
+};
+
+function average(values: number[]) {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function normalizeEmotionLabel(value?: string) {
+  return (value || "").trim().toLowerCase();
+}
+
+function isCalmerEmotion(value?: string) {
+  return ["calm", "calmer", "reassured", "relieved", "steady"].includes(normalizeEmotionLabel(value));
+}
+
+function isEscalatedEmotion(value?: string) {
+  return ["angry", "upset", "alarmed", "offended", "defensive", "withdrawn", "done"].includes(normalizeEmotionLabel(value));
+}
+
+function buildStateHistoryEvidence(params: {
+  scenarioJson: ScenarioDirectorResult;
+  transcript: TranscriptTurn[];
+  stateHistory: StateUpdateResult[];
+}) {
+  const initialState = params.stateHistory[0];
+  const finalState = params.stateHistory[params.stateHistory.length - 1];
+  const analysesFromState = params.stateHistory
+    .map((state) => state.latest_employee_analysis)
+    .filter((analysis): analysis is NonNullable<typeof analysis> => Boolean(analysis));
+  const analyses = analysesFromState.length > 0
+    ? analysesFromState
+    : deriveAnalysesFromTranscript({
+      scenarioJson: params.scenarioJson,
+      transcript: params.transcript,
+    });
+
+  const finalOutcomeState = getConversationOutcomeState(finalState || {});
+  const totalAnalyses = Math.max(analyses.length, 1);
+  const count = (predicate: (analysis: (typeof analyses)[number]) => boolean) => analyses.filter(predicate).length;
+  const acceptedNextStep = finalState?.accepted_next_step ?? analyses.some((analysis) =>
+    analysis.tookOwnership
+    && !analysis.avoidedQuestion
+    && !analysis.disrespect
+    && (
+      analysis.explicitNextStep
+      || analysis.explicitTimeline
+      || analysis.explicitDirection
+      || analysis.explicitRecommendation
+    ),
+  );
+  const validRedirect = finalState?.valid_redirect ?? analyses.some((analysis) =>
+    analysis.explicitManagerMention
+    && analysis.escalatedAppropriately
+    && !analysis.soundedDismissive
+    && !analysis.soundedRude,
+  );
+  const prematureClosureDetected = params.stateHistory.some((state) => state.premature_closure_detected);
+  const unresolvedCriteria = finalState?.unmet_completion_criteria || [];
+  const realNextStep = analyses.some((analysis) => analysis.explicitNextStep || analysis.explicitTimeline || analysis.explicitDirection || analysis.explicitRecommendation);
+  const addressedConcernCount = count((analysis) =>
+    analysis.answeredQuestion
+    || analysis.explicitExplanation
+    || analysis.explicitVerification
+    || analysis.explicitDiscovery
+    || analysis.explicitDirection,
+  );
+  const addressedConcern = addressedConcernCount > 0;
+  const addressedConcernRate = addressedConcernCount / totalAnalyses;
+  const customerFeltHeardCount = count((analysis) => analysis.madeCustomerFeelHeard);
+  const customerFeltHeard = customerFeltHeardCount > 0 && addressedConcern;
+  const ownershipRate = count((analysis) => analysis.tookOwnership) / totalAnalyses;
+  const avoidantRate = count((analysis) =>
+    analysis.avoidedQuestion
+    || analysis.deadEndLanguage
+    || analysis.vaguenessDetected
+    || analysis.likelyStalled,
+  ) / totalAnalyses;
+  const disrespectRate = count((analysis) =>
+    analysis.disrespect
+    || analysis.soundedRude
+    || analysis.soundedDismissive
+    || analysis.blameShifting,
+  ) / totalAnalyses;
+  const policyGroundedRate = count((analysis) =>
+    analysis.accuracy >= 6 && (analysis.explicitExplanation || analysis.explicitVerification || analysis.explicitDirection),
+  ) / totalAnalyses;
+  const resolutionTurnRate = count((analysis) =>
+    analysis.explicitNextStep
+    || analysis.explicitTimeline
+    || analysis.explicitRecommendation
+    || analysis.escalatedAppropriately,
+  ) / totalAnalyses;
+  const customerImproved = Boolean(initialState && finalState)
+    && (
+      (finalState.trust_level > initialState.trust_level)
+      || (finalState.issue_clarity > initialState.issue_clarity)
+      || (finalState.offense_level < initialState.offense_level)
+      || (isCalmerEmotion(finalState.emotion_state) && !isEscalatedEmotion(initialState.emotion_state))
+    );
+  const deEscalated = Boolean(initialState && finalState)
+    && (
+      finalState.offense_level < initialState.offense_level
+      || finalState.manager_request_level < initialState.manager_request_level
+      || (isCalmerEmotion(finalState.emotion_state) && !isEscalatedEmotion(finalState.emotion_state))
+    );
+
+  return {
+    analyses,
+    finalState,
+    evidence: {
+      finalOutcomeState,
+      acceptedNextStep,
+      validRedirect,
+      prematureClosureDetected,
+      unresolvedCriteria,
+      customerImproved,
+      deEscalated,
+      addressedConcern,
+      addressedConcernRate,
+      realNextStep,
+      realNextStepRate: resolutionTurnRate,
+      solvedOrRedirected: isTerminalConversationState(finalState || {})
+        || (acceptedNextStep && unresolvedCriteria.length === 0),
+      customerFeltHeard,
+      customerFeltHeardRate: customerFeltHeardCount / totalAnalyses,
+      ownershipRate,
+      avoidantRate,
+      disrespectRate,
+      policyGroundedRate,
+      resolutionTurnRate,
+    } satisfies OutcomeEvidence,
+  };
+}
+
+function capCategoryScore(value: number, maxAllowed: number, condition: boolean) {
+  return clampScore(condition ? value : Math.min(value, maxAllowed));
+}
+
+function deriveScoreDimensions(params: {
+  categoryScores: CategoryScores;
+  evidence: OutcomeEvidence;
+}) {
+  const interactionQuality = clampScore(average([
+    params.categoryScores.opening_warmth,
+    params.categoryScores.listening_empathy,
+    params.categoryScores.clarity_directness,
+    params.categoryScores.de_escalation,
+    params.categoryScores.visible_professionalism,
+  ]) * 10, 0, 100);
+
+  const operationalEffectiveness = clampScore(average([
+    params.categoryScores.policy_accuracy,
+    params.categoryScores.ownership,
+    params.categoryScores.problem_solving,
+    params.categoryScores.escalation_judgment,
+    params.categoryScores.closing_control,
+  ]) * 10, 0, 100);
+
+  let outcomeQualityBase = 18;
+  if (params.evidence.finalOutcomeState === "RESOLVED") outcomeQualityBase = 88;
+  else if (params.evidence.finalOutcomeState === "ESCALATED") outcomeQualityBase = params.evidence.validRedirect ? 76 : 28;
+  else if (params.evidence.finalOutcomeState === "PARTIALLY_RESOLVED") outcomeQualityBase = 34;
+  else if (params.evidence.finalOutcomeState === "ABANDONED") outcomeQualityBase = 10;
+  else if (params.evidence.finalOutcomeState === "TIMED_OUT") outcomeQualityBase = 6;
+
+  const outcomeQuality = clampScore(
+    outcomeQualityBase
+      + (params.evidence.acceptedNextStep ? 6 : 0)
+      + (params.evidence.validRedirect ? 6 : 0)
+      + (params.evidence.customerImproved ? 4 : -4)
+      + (params.evidence.addressedConcernRate >= 0.6 ? 4 : -6)
+      + (params.evidence.realNextStepRate >= 0.4 ? 4 : -6)
+      - (params.evidence.prematureClosureDetected ? 18 : 0)
+      - Math.min(params.evidence.unresolvedCriteria.length * 10, 30)
+      - (params.evidence.avoidantRate >= 0.5 ? 8 : 0)
+      - (params.evidence.disrespectRate >= 0.34 ? 8 : 0),
+    0,
+    100,
+  );
+
+  return {
+    interaction_quality: interactionQuality,
+    operational_effectiveness: operationalEffectiveness,
+    outcome_quality: outcomeQuality,
+  } satisfies ScoreDimensions;
+}
+
+function gateCategoryScores(params: {
+  scenarioJson: ScenarioDirectorResult;
+  categoryScores: CategoryScores;
+  evidence: OutcomeEvidence;
+}) {
+  const strongConcernHandling =
+    params.evidence.addressedConcern
+    && params.evidence.addressedConcernRate >= 0.5
+    && params.evidence.customerFeltHeard
+    && params.evidence.customerFeltHeardRate >= 0.4;
+  const strongOwnership =
+    (params.evidence.realNextStep || params.evidence.validRedirect)
+    && params.evidence.ownershipRate >= 0.5
+    && params.evidence.avoidantRate < 0.5;
+  const strongProblemSolving =
+    params.evidence.solvedOrRedirected
+    && params.evidence.realNextStepRate >= 0.4
+    && params.evidence.unresolvedCriteria.length === 0;
+  const strongDeEscalation =
+    params.evidence.deEscalated
+    && params.evidence.customerImproved
+    && params.evidence.disrespectRate < 0.34;
+  const cleanClosure =
+    !params.evidence.prematureClosureDetected
+    && params.evidence.unresolvedCriteria.length === 0
+    && (
+      (params.evidence.finalOutcomeState === "RESOLVED" && params.evidence.acceptedNextStep)
+      || (params.evidence.finalOutcomeState === "ESCALATED" && params.evidence.validRedirect && params.evidence.acceptedNextStep)
+    );
+
+  return evaluationResultSchema.shape.category_scores.parse({
+    ...params.categoryScores,
+    listening_empathy: capCategoryScore(
+      params.categoryScores.listening_empathy,
+      strongConcernHandling ? 10 : params.evidence.addressedConcern ? 5 : 3,
+      strongConcernHandling,
+    ),
+    clarity_directness: capCategoryScore(
+      params.categoryScores.clarity_directness,
+      params.evidence.addressedConcernRate >= 0.5 && params.evidence.avoidantRate < 0.5 ? 7 : 4,
+      params.evidence.addressedConcernRate >= 0.75 && params.evidence.avoidantRate < 0.34,
+    ),
+    policy_accuracy: capCategoryScore(
+      params.categoryScores.policy_accuracy,
+      params.evidence.policyGroundedRate >= 0.4 ? 7 : 4,
+      params.evidence.policyGroundedRate >= 0.6,
+    ),
+    ownership: capCategoryScore(
+      params.categoryScores.ownership,
+      strongOwnership ? 10 : params.evidence.realNextStep || params.evidence.validRedirect ? 5 : 2,
+      strongOwnership,
+    ),
+    problem_solving: capCategoryScore(
+      params.categoryScores.problem_solving,
+      strongProblemSolving ? 10 : params.evidence.realNextStep || params.evidence.validRedirect ? 4 : 2,
+      strongProblemSolving,
+    ),
+    de_escalation: capCategoryScore(
+      params.categoryScores.de_escalation,
+      strongDeEscalation ? 10 : params.evidence.deEscalated ? 4 : 2,
+      strongDeEscalation,
+    ),
+    closing_control: capCategoryScore(
+      params.categoryScores.closing_control,
+      cleanClosure ? 10 : params.evidence.finalOutcomeState === "RESOLVED" || params.evidence.finalOutcomeState === "ESCALATED" ? 4 : 1,
+      cleanClosure,
+    ),
+    visible_professionalism: capCategoryScore(
+      params.categoryScores.visible_professionalism,
+      params.evidence.disrespectRate < 0.34 ? 7 : 3,
+      params.evidence.disrespectRate === 0,
+    ),
+  });
+}
+
+function finalizeEvaluationFromEvidence(params: {
+  scenarioJson: ScenarioDirectorResult;
+  transcript: TranscriptTurn[];
+  stateHistory: StateUpdateResult[];
+  rawEvaluation: EvaluationResult;
+}) {
+  const { analyses, evidence } = buildStateHistoryEvidence({
+    scenarioJson: params.scenarioJson,
+    transcript: params.transcript,
+    stateHistory: params.stateHistory,
+  });
+  const weightedCategoryScores = evaluationResultSchema.shape.category_scores.parse(
+    applyScenarioPriorityWeights(params.scenarioJson, params.rawEvaluation.category_scores),
+  );
+  const categoryScores = gateCategoryScores({
+    scenarioJson: params.scenarioJson,
+    categoryScores: weightedCategoryScores,
+    evidence,
+  });
+  const scoreDimensions = deriveScoreDimensions({
+    categoryScores,
+    evidence,
+  });
+  const overallScore = clampScore(
+    Math.round(
+      scoreDimensions.interaction_quality * 0.20
+      + scoreDimensions.operational_effectiveness * 0.25
+      + scoreDimensions.outcome_quality * 0.55,
+    ),
+    0,
+    100,
+  );
+  const passFail = overallScore >= 80 ? "pass" : overallScore >= 65 ? "borderline" : "fail";
+  const readiness = overallScore >= 85 ? "independent" : overallScore >= 75 ? "partially_independent" : overallScore >= 60 ? "shadow_ready" : "practice_more";
+
+  const missedMoments = Array.from(new Set([
+    ...(params.rawEvaluation.missed_moments || []),
+    ...(!evidence.addressedConcern ? ["Did not fully answer or address the customer's concern."] : []),
+    ...(!evidence.realNextStep && !evidence.validRedirect ? ["Did not provide a real next step or valid handoff."] : []),
+    ...(evidence.prematureClosureDetected ? ["Tried to close the conversation before the issue was actually resolved."] : []),
+    ...(!evidence.deEscalated ? ["Did not measurably improve the customer state before closing or redirecting."] : []),
+    ...evidence.unresolvedCriteria.map((criterion) => `Left this unresolved: ${criterion}.`),
+  ]));
+
+  const bestMoments = Array.from(new Set([
+    ...(params.rawEvaluation.best_moments || []),
+    ...(evidence.customerFeltHeard ? ["Made the customer feel heard and addressed the real concern."] : []),
+    ...(evidence.acceptedNextStep ? ["Created a concrete next step the customer could accept."] : []),
+    ...(evidence.validRedirect ? ["Handled the escalation path cleanly with a valid redirect."] : []),
+  ]));
+
+  return evaluationResultSchema.parse({
+    ...params.rawEvaluation,
+    overall_score: overallScore,
+    pass_fail: passFail,
+    readiness_signal: readiness,
+    category_scores: categoryScores,
+    score_dimensions: scoreDimensions,
+    best_moments: bestMoments,
+    missed_moments: missedMoments,
+    most_important_correction:
+      missedMoments[0]
+      || params.rawEvaluation.most_important_correction
+      || `Keep the conversation grounded in the real outcome for ${getScenarioGoal(params.scenarioJson).title}.`,
+    summary: `${params.rawEvaluation.summary} Final outcome: ${evidence.finalOutcomeState}. Outcome quality was weighted heavily in the final score.`,
+  });
 }
 
 function buildLocalEvaluation(params: {
   scenarioJson: ScenarioDirectorResult;
   transcript: TranscriptTurn[];
+  stateHistory: StateUpdateResult[];
   policyContext: string;
 }): EvaluationPipelineResult {
   const priorityProfile = getScenarioPriorityProfile(params.scenarioJson);
   const scenarioGoal = getScenarioGoal(params.scenarioJson);
   const emergencyResponse = params.scenarioJson.scenario_family === "emergency_response";
-  const employeeTurns = params.transcript.filter(turn => turn.role === "employee");
-  const scores = employeeTurns.map(turn => scoreEmployeeMessage(turn.message));
-  const total = Math.max(scores.length, 1);
-  const count = (key: keyof ReturnType<typeof scoreEmployeeMessage>) => scores.filter(score => score[key]).length;
-  const empathyCount = count("empathy");
-  const ownershipCount = count("ownership");
-  const directCount = count("direct");
-  const policyCount = count("policy");
-  const avoidantCount = count("avoidant");
-  const criticalCount = count("critical");
-  const escalationCount = count("escalation");
+  const { analyses, evidence } = buildStateHistoryEvidence({
+    scenarioJson: params.scenarioJson,
+    transcript: params.transcript,
+    stateHistory: params.stateHistory,
+  });
+  const total = Math.max(analyses.length, 1);
+  const count = (predicate: (analysis: StateUpdateResult["latest_employee_analysis"]) => boolean) => analyses.filter(predicate).length;
+  const empathyCount = count((analysis) => analysis.empathy >= 6);
+  const ownershipCount = count((analysis) => analysis.tookOwnership);
+  const directCount = count((analysis) => analysis.clarity >= 6 || analysis.directness >= 6);
+  const policyCount = count((analysis) => analysis.accuracy >= 6 && (analysis.explicitExplanation || analysis.explicitVerification));
+  const avoidantCount = count((analysis) => analysis.avoidedQuestion || analysis.deadEndLanguage || analysis.vaguenessDetected);
+  const criticalCount = count((analysis) => analysis.explicitDisrespect || analysis.accuracy <= 2);
+  const escalationCount = count((analysis) => analysis.explicitManagerMention || analysis.escalatedAppropriately);
+  const answeredCount = count((analysis) => analysis.answeredQuestion || analysis.explicitExplanation || analysis.explicitVerification || analysis.explicitDirection || analysis.explicitDiscovery);
+  const feltHeardCount = count((analysis) => analysis.madeCustomerFeelHeard);
+  const nextStepCount = count((analysis) => analysis.explicitNextStep || analysis.explicitTimeline || analysis.explicitDirection || analysis.explicitRecommendation);
+  const respectfulCount = count((analysis) => !analysis.disrespect && !analysis.soundedRude && !analysis.soundedDismissive);
+  const avg = (picker: (analysis: StateUpdateResult["latest_employee_analysis"]) => number) => average(analyses.map(picker));
+  const answeredRate = answeredCount / total;
+  const ownershipRate = ownershipCount / total;
+  const nextStepRate = nextStepCount / total;
+  const avoidantRate = avoidantCount / total;
+  const respectfulRate = respectfulCount / total;
 
   const baseCategoryScores = evaluationResultSchema.shape.category_scores.parse({
-    opening_warmth: clampScore((empathyCount / total) * 10),
-    listening_empathy: clampScore((empathyCount / total) * 10),
-    clarity_directness: clampScore((directCount / total) * 10),
-    policy_accuracy: clampScore(emergencyResponse ? ((directCount + ownershipCount) / (2 * total)) * 10 : (policyCount / total) * 10),
-    ownership: clampScore((ownershipCount / total) * 10),
-    problem_solving: clampScore(((ownershipCount + directCount) / (2 * total)) * 10),
-    de_escalation: clampScore((((empathyCount + ownershipCount) / (2 * total)) * 10) - criticalCount * 2),
+    opening_warmth: clampScore((avg((analysis) => analysis.warmth) * 0.7) + ((empathyCount / total) * 3) - (criticalCount * 1.5)),
+    listening_empathy: clampScore(
+      (avg((analysis) => analysis.empathy) * 0.45)
+      + (avg((analysis) => analysis.respectfulness) * 0.25)
+      + (answeredRate * 2.0)
+      + ((feltHeardCount / total) * 1.5)
+      - (avoidantRate * 4)
+      - (criticalCount * 1.5),
+    ),
+    clarity_directness: clampScore(
+      (avg((analysis) => analysis.clarity) * 0.5)
+      + (avg((analysis) => analysis.directness) * 0.25)
+      + (avg((analysis) => analysis.explanationQuality) * 0.25)
+      - (avoidantRate * 4)
+      - (criticalCount * 1.5),
+    ),
+    policy_accuracy: clampScore(
+      emergencyResponse
+        ? ((directCount + ownershipCount) / (2 * total)) * 10
+        : (policyCount / total) * 8 + (avg((analysis) => analysis.accuracy) * 0.2),
+    ),
+    ownership: clampScore(
+      (avg((analysis) => analysis.ownership) * 0.55)
+      + (avg((analysis) => analysis.nextStepQuality) * 0.25)
+      + (ownershipRate * 2)
+      - (avoidantRate * 4)
+      - (criticalCount * 1.5),
+    ),
+    problem_solving: clampScore(
+      (avg((analysis) => analysis.helpfulness) * 0.4)
+      + (avg((analysis) => analysis.nextStepQuality) * 0.3)
+      + (avg((analysis) => analysis.explanationQuality) * 0.2)
+      + (nextStepRate * 1.0)
+      - (avoidantRate * 4)
+      - (criticalCount * 1.5),
+    ),
+    de_escalation: clampScore(
+      (avg((analysis) => analysis.empathy) * 0.25)
+      + (avg((analysis) => analysis.respectfulness) * 0.25)
+      + (avg((analysis) => analysis.helpfulness) * 0.2)
+      + (respectfulRate * 2.0)
+      - (criticalCount * 2.5),
+    ),
     escalation_judgment: clampScore((escalationCount > 0 || criticalCount === 0) ? 7 : 4),
-    visible_professionalism: clampScore(8 - criticalCount * 3 - avoidantCount * 2),
-    closing_control: clampScore((ownershipCount / total) * 10),
+    visible_professionalism: clampScore((avg((analysis) => analysis.professionalism) * 0.6) + (respectfulRate * 4) - criticalCount * 2.5 - avoidantCount),
+    closing_control: clampScore(
+      (avg((analysis) => analysis.nextStepQuality) * 0.45)
+      + (avg((analysis) => analysis.ownership) * 0.25)
+      + (avg((analysis) => analysis.directness) * 0.15)
+      + (nextStepRate * 1.5)
+      - (avoidantRate * 4)
+      - (criticalCount * 1.5),
+    ),
   });
-  const categoryScores = evaluationResultSchema.shape.category_scores.parse(
-    applyScenarioPriorityWeights(params.scenarioJson, baseCategoryScores),
+  const categoryScores = gateCategoryScores({
+    scenarioJson: params.scenarioJson,
+    categoryScores: evaluationResultSchema.shape.category_scores.parse(
+      applyScenarioPriorityWeights(params.scenarioJson, baseCategoryScores),
+    ),
+    evidence,
+  });
+  const scoreDimensions = deriveScoreDimensions({ categoryScores, evidence });
+  const overallScore = clampScore(
+    Math.round(
+      scoreDimensions.interaction_quality * 0.20
+      + scoreDimensions.operational_effectiveness * 0.25
+      + scoreDimensions.outcome_quality * 0.55,
+    ),
+    0,
+    100,
   );
-
-  const overallScore = Math.round(
-    (Object.values(categoryScores).reduce((sum, value) => sum + value, 0) / Object.values(categoryScores).length) * 10,
-  );
-  const passFail = overallScore >= 75 ? "pass" : overallScore >= 60 ? "borderline" : "fail";
+  const passFail = overallScore >= 80 ? "pass" : overallScore >= 65 ? "borderline" : "fail";
   const readiness = overallScore >= 85 ? "independent" : overallScore >= 75 ? "partially_independent" : overallScore >= 60 ? "shadow_ready" : "practice_more";
   const bestMoments = [
     empathyCount > 0
@@ -771,15 +1314,18 @@ function buildLocalEvaluation(params: {
     !emergencyResponse && policyCount === 0 ? "Did not anchor the response in club policy or verification." : null,
     avoidantCount > 0 ? "Used avoidant phrasing instead of owning the issue." : null,
     emergencyResponse && ownershipCount === 0 ? "Did not take firm control of the emergency response." : null,
-    params.scenarioJson.department === "golf" && ownershipCount > 0 && directCount === 0 ? "Did not close with enough control or a clean next step." : null,
+    params.scenarioJson.department === "golf" && !evidence.solvedOrRedirected ? "Did not close with enough control or a clean next step." : null,
+    evidence.prematureClosureDetected ? "Tried to close before there was a real outcome." : null,
+    !evidence.realNextStep && !evidence.validRedirect ? "Did not create a usable next step or redirect." : null,
   ].filter(Boolean) as string[];
   const coachingGuidance = buildScenarioCoachingGuidance(params.scenarioJson);
 
-  const evaluation = evaluationResultSchema.parse({
+  const rawEvaluation = evaluationResultSchema.parse({
     overall_score: overallScore,
     pass_fail: passFail,
     readiness_signal: readiness,
     category_scores: categoryScores,
+    score_dimensions: scoreDimensions,
     best_moments: bestMoments,
     missed_moments: missedMoments,
     critical_mistakes: criticalCount > 0 ? ["Used language that would escalate or abandon the issue."] : [],
@@ -787,6 +1333,12 @@ function buildLocalEvaluation(params: {
     most_important_correction: missedMoments[0] || `Keep the conversation grounded in the actual goal: ${scenarioGoal.title}.`,
     ideal_response_example: buildIdealResponseExample(params.scenarioJson),
     summary: `Local evaluation completed for ${familyLabels[params.scenarioJson.scenario_family] || params.scenarioJson.scenario_family}. Goal: ${scenarioGoal.title}. Priority lens: ${priorityProfile.primary.join(", ")}.`,
+  });
+  const evaluation = finalizeEvaluationFromEvidence({
+    scenarioJson: params.scenarioJson,
+    transcript: params.transcript,
+    stateHistory: params.stateHistory,
+    rawEvaluation,
   });
 
   return {
@@ -832,7 +1384,7 @@ function buildLocalEvaluation(params: {
       top_corrections: missedMoments.length > 0 ? missedMoments : ["Push the employee to stay specific under pressure."],
       whether_live_shadowing_is_needed: overallScore < 60,
       whether_manager_follow_up_is_needed: overallScore < 75,
-      recommended_follow_up_action: overallScore < 75 ? `Assign another drill in the same family with emphasis on ${priorityProfile.primary.join(", ")}.` : "Advance to the next difficulty.",
+      recommended_follow_up_action: overallScore < 75 ? `Assign another conversation in the same issue family with emphasis on ${priorityProfile.primary.join(", ")}.` : "Advance to the next difficulty.",
       recommended_next_drill: params.scenarioJson.scenario_family,
     }),
   };
@@ -860,7 +1412,7 @@ function buildLocalProfileUpdate(params: { currentProfile: any; sessionBundle: a
     weakest_scenario_families: overallScore < 70 ? [params.sessionBundle?.scenario?.scenario_family].filter(Boolean) : [],
     pressure_handling: overallScore >= 75 ? "steady" : "needs repetition",
     consistency_score: Math.max(0, Math.min(100, overallScore)),
-    recommended_next_steps: ["Run another 3-5 turn scenario and keep the close explicit."],
+    recommended_next_steps: ["Run another conversation in this issue family and keep the close explicit."],
     manager_attention_flag: overallScore < 60,
   });
 }
@@ -921,6 +1473,11 @@ function buildFailureBundle(params: {
     pass_fail: "fail",
     readiness_signal: "practice_more",
     category_scores: DEFAULT_CATEGORY_SCORES,
+    score_dimensions: {
+      interaction_quality: 0,
+      operational_effectiveness: 0,
+      outcome_quality: 0,
+    },
     best_moments: [],
     missed_moments: [params.failure.message],
     critical_mistakes: [params.failure.code],
@@ -935,7 +1492,7 @@ function buildFailureBundle(params: {
     what_you_did_well: [],
     what_hurt_you: [params.failure.message],
     do_this_next_time: [
-      "Repeat the scenario with a complete 3-5 turn interaction.",
+      "Repeat the conversation with a complete recording and a clear beginning, middle, and ending.",
       "Make sure transcript or media capture is working before you begin again.",
     ],
     replacement_phrases: ["Let me restart and handle that from the top."],
@@ -1031,18 +1588,6 @@ function assessTranscript(transcriptInput: unknown): { transcript?: TranscriptTu
         code: "transcript_failure",
         stage: "transcript_validation",
         message: "Transcript did not capture both sides of the interaction.",
-        retryable: true,
-      },
-    };
-  }
-
-  if (transcript.length < 3 || employeeTurns.length < 2) {
-    return {
-      transcript,
-      failure: {
-        code: "incomplete_session",
-        stage: "session_completeness",
-        message: "Session ended before enough turns were captured to score it confidently.",
         retryable: true,
       },
     };
@@ -1166,13 +1711,31 @@ Employee level estimate: ${params.employeeLevelEstimate || "unknown"}
 Requirements:
 - Keep it specific to Woodinville Sports Club.
 - Use only the current role track for the department.
-- Keep it trainable in 3-5 turns.
 - Avoid generic retail, hotel, or call-center situations.
+- Build a real human customer, not a complaint script.
+- Do not shape the scenario to a preset number of turns or exchanges.
+- Some complaints should resolve quickly if handled well. Others should require a longer realistic back-and-forth before they feel credibly handled.
+- Include richer human context fields:
+  - motive
+  - hidden_context
+  - personality_style
+  - past_history
+  - pressure_context
+  - friction_points
+  - emotional_triggers
+  - likely_assumptions
+  - what_hearing_them_out_sounds_like
+  - credible_next_steps
+  - calm_down_if
+  - lose_trust_if
+- Make "what hearing them out sounds like" specific to this person, not generic empathy.
+- Make "credible next steps" concrete enough that a real customer would actually believe them.
+- The customer should feel human, a little imperfect, and somewhat resistant to weak service.
 
 Approved policy context:
 ${policyContext}
 
-Return the full scenario JSON with branch_logic, emotion_progression, and completion_rules.`;
+Return the full scenario JSON with branch_logic, emotion_progression, completion_rules, and the richer human context fields.`;
 
   const scenario = scenarioDirectorResultSchema.parse(await runPrompt(AI_SERVICE_REGISTRY.scenarioDirector, prompt));
   return scenarioDirectorResultSchema.parse({
@@ -1186,59 +1749,128 @@ export async function processEmployeeTurn(params: {
   stateJson?: unknown;
   transcript: Array<{ role: string; message: string; emotion?: string }>;
   employeeResponse: string;
+  deliveryAnalysis?: unknown;
 }): Promise<{ customerReply: CustomerReplyResult; stateUpdate: StateUpdateResult }> {
   const transcript = transcriptSchema.parse(params.transcript);
   const parsedScenario = scenarioDirectorResultSchema.parse(params.scenarioJson);
   const parsedPriorState = stateUpdateResultSchema.partial().safeParse(params.stateJson).success
     ? (params.stateJson as Partial<StateUpdateResult>)
     : undefined;
-  const score = scoreEmployeeMessage(params.employeeResponse);
-  const objectiveProgress = assessGoalProgress({
+  const simulatedTurn = simulateCustomerTurn({
     scenario: parsedScenario,
     transcript,
+    priorState: parsedPriorState,
     employeeResponse: params.employeeResponse,
-    score,
+    deliveryAnalysis: params.deliveryAnalysis as any,
   });
 
   if (!ENV.forgeApiKey) {
-    return buildLocalTurnResponse({
-      scenario: parsedScenario,
-      transcript,
-      priorState: parsedPriorState,
-      employeeResponse: params.employeeResponse,
-    });
+    return {
+      customerReply: simulatedTurn.customerReply,
+      stateUpdate: simulatedTurn.stateUpdate,
+    };
   }
 
   const transcriptText = formatTranscript(transcript);
-  const priorState = parsedPriorState;
-  const defaultState = {
-    turn_number: 1,
-    emotion_state: (params.scenarioJson as any)?.emotion_progression?.starting_state || "frustrated",
-    trust_level: 3,
-    issue_clarity: 3,
-    employee_flags: {
-      showed_empathy: false,
-      answered_directly: false,
-      used_correct_policy: false,
-      took_ownership: false,
-      avoided_question: false,
-      critical_error: false,
-    },
-    escalation_required: false,
-    scenario_risk_level: "moderate",
-    continue_simulation: true,
-  };
+  const defaultState = buildDefaultConversationState(parsedScenario, parsedPriorState);
+  const promptContext = buildSimulationPromptContext({
+    scenario: parsedScenario,
+    transcript,
+    priorState: parsedPriorState,
+    employeeResponse: params.employeeResponse,
+    deliveryAnalysis: params.deliveryAnalysis as any,
+  });
+  const promptContextText = formatPromptContext(promptContext);
+  const actorRuntime = buildCustomerActorRuntimeContext({
+    scenario: parsedScenario,
+    state: simulatedTurn.stateUpdate,
+    priorState: defaultState,
+    progress: promptContext.progress,
+    analysis: promptContext.employeeAnalysis,
+    transcript,
+  });
 
-  const customerPrompt = `Scenario:\n${JSON.stringify(parsedScenario, null, 2)}\n\nConversation state:\n${JSON.stringify(priorState || defaultState, null, 2)}\n\nTranscript so far:\n${transcriptText}\n\nOperational goal:\n${objectiveProgress.goal.title}\n${objectiveProgress.goal.description}\n\nResponse progress analysis:\n${objectiveProgress.progressSummary}\nNext missing objective: ${objectiveProgress.nextMissing || "none"}\nCompleted this turn: ${objectiveProgress.completedThisTurn.join(", ") || "none"}\n\nLatest employee response:\n${params.employeeResponse}\n\nInstruction: Acknowledge meaningful progress naturally, then ask only for the next missing thing if the issue is not resolved. Do not repeat an old ask once the employee has already handled it.`;
-  const customerReply = await runPrompt(AI_SERVICE_REGISTRY.statefulCustomerActor, customerPrompt);
+  try {
+    const customerPrompt = `Customer situation:
+${JSON.stringify({
+  reason_for_contacting: parsedScenario.situation_summary,
+  desired_outcome: parsedScenario.motive,
+  what_the_customer_thinks_happened: simulatedTurn.stateUpdate.customer_belief_about_problem,
+  what_is_actually_true: simulatedTurn.stateUpdate.true_underlying_problem,
+  hidden_context: parsedScenario.hidden_context,
+  pressure_context: parsedScenario.pressure_context,
+  friction_points: parsedScenario.friction_points,
+  emotional_triggers: parsedScenario.emotional_triggers,
+  likely_assumptions: parsedScenario.likely_assumptions,
+  what_hearing_them_out_sounds_like: parsedScenario.what_hearing_them_out_sounds_like,
+  credible_next_steps: parsedScenario.credible_next_steps,
+  calm_down_if: parsedScenario.calm_down_if,
+  lose_trust_if: parsedScenario.lose_trust_if,
+}, null, 2)}
 
-  const statePrompt = `Previous state:\n${JSON.stringify(priorState || defaultState, null, 2)}\n\nScenario:\n${JSON.stringify(parsedScenario, null, 2)}\n\nOperational goal progress:\n${objectiveProgress.progressSummary}\nNext missing objective: ${objectiveProgress.nextMissing || "none"}\n\nLatest employee turn:\n${params.employeeResponse}\n\nLatest customer turn:\n${JSON.stringify(customerReply, null, 2)}`;
-  const stateUpdate = await runPrompt(AI_SERVICE_REGISTRY.conversationStateUpdater, statePrompt);
+Hidden human profile:
+${JSON.stringify(actorRuntime.profile, null, 2)}
 
-  return {
-    customerReply: customerReplyResultSchema.parse(customerReply),
-    stateUpdate: stateUpdateResultSchema.parse(stateUpdate),
-  };
+Current hidden state:
+${JSON.stringify({
+  initial_customer_complaint: simulatedTurn.stateUpdate.initial_customer_complaint,
+  current_customer_goal: simulatedTurn.stateUpdate.current_customer_goal,
+  root_issue_status: simulatedTurn.stateUpdate.root_issue_status,
+  emotional_state: simulatedTurn.stateUpdate.emotional_state,
+  trust_level: simulatedTurn.stateUpdate.trust_level,
+  patience_level: simulatedTurn.stateUpdate.patience_level,
+  confusion_level: 10 - simulatedTurn.stateUpdate.issue_clarity,
+  confidence_in_employee: simulatedTurn.stateUpdate.confidence_in_employee,
+  willingness_to_accept_redirect: simulatedTurn.stateUpdate.willingness_to_accept_redirect,
+  willingness_to_escalate: simulatedTurn.stateUpdate.willingness_to_escalate,
+  discovered_facts: simulatedTurn.stateUpdate.discovered_facts,
+  unresolved_subissues: simulatedTurn.stateUpdate.unresolved_subissues,
+  employee_promises_made: simulatedTurn.stateUpdate.employee_promises_made,
+  next_step_owner: simulatedTurn.stateUpdate.next_step_owner,
+  next_step_timeline: simulatedTurn.stateUpdate.next_step_timeline,
+  valid_redirect: simulatedTurn.stateUpdate.valid_redirect,
+  unresolved_questions: simulatedTurn.stateUpdate.unresolved_questions,
+  unmet_completion_criteria: simulatedTurn.stateUpdate.unmet_completion_criteria,
+  premature_closure_detected: simulatedTurn.stateUpdate.premature_closure_detected,
+  terminal_outcome_state: simulatedTurn.stateUpdate.terminal_outcome_state,
+  outcome_summary: simulatedTurn.stateUpdate.outcome_summary,
+}, null, 2)}
+
+How the employee just came across:
+${JSON.stringify({
+  interpretation: actorRuntime.interpretation,
+  summary: promptContext.employeeAnalysis.summary,
+  tone_labels: promptContext.employeeAnalysis.toneLabels,
+  strengths: promptContext.employeeAnalysis.strengths,
+  issues: promptContext.employeeAnalysis.issues,
+}, null, 2)}
+
+Recent conversation history:
+${transcriptText}
+
+Latest employee response:
+${params.employeeResponse}
+
+Supporting turn context:
+${promptContextText}
+
+Instruction:
+Respond as the customer only. Sound like an ordinary person with a real problem, not a support macro. Keep it natural, a little imperfect, and focused on what still matters to you. Do not start winding down because several turns have already happened. If the complaint is still materially open, keep it alive naturally. Do not accept vague reassurance as a real next step.`;
+    const customerReply = await runPrompt(AI_SERVICE_REGISTRY.statefulCustomerActor, customerPrompt);
+    const parsedCustomerReply = customerReplyResultSchema.parse(customerReply);
+    return {
+      customerReply: customerReplyResultSchema.parse({
+        ...simulatedTurn.customerReply,
+        customer_reply: parsedCustomerReply.customer_reply,
+      }),
+      stateUpdate: simulatedTurn.stateUpdate,
+    };
+  } catch {
+    return {
+      customerReply: simulatedTurn.customerReply,
+      stateUpdate: simulatedTurn.stateUpdate,
+    };
+  }
 }
 
 export async function runPostSessionEvaluation(params: {
@@ -1289,6 +1921,7 @@ export async function runPostSessionEvaluation(params: {
     return buildLocalEvaluation({
       scenarioJson: parsedScenario,
       transcript,
+      stateHistory,
       policyContext,
     });
   }
@@ -1327,7 +1960,12 @@ export async function runPostSessionEvaluation(params: {
 
     const validatedPolicyGrounding = policyGroundingResultSchema.parse(policyGrounding);
     const validatedSessionQuality = sessionQualityResultSchema.parse(sessionQuality);
-    const validatedEvaluation = evaluationResultSchema.parse(evaluation);
+    const validatedEvaluation = finalizeEvaluationFromEvidence({
+      scenarioJson: parsedScenario,
+      transcript,
+      stateHistory,
+      rawEvaluation: evaluationResultSchema.parse(evaluation),
+    });
     const validatedCoaching = coachingResultSchema.parse(coaching);
     const validatedManagerDebrief = managerDebriefResultSchema.parse(managerDebrief);
     const processingStatus = validatedSessionQuality.retry_recommended || validatedSessionQuality.session_quality === "invalid"

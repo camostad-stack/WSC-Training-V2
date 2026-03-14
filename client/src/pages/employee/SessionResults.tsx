@@ -6,6 +6,7 @@ import { useLocation, Redirect } from "wouter";
 import { CheckCircle, XCircle, AlertTriangle, ArrowRight, RotateCcw, ChevronDown, ChevronUp } from "lucide-react";
 import { useState } from "react";
 import { familyLabels } from "@/features/simulator/config";
+import { buildPostCallDebrief } from "@/features/simulator/debrief";
 
 const passColors: Record<string, { bg: string; text: string; icon: any }> = {
   pass: { bg: "bg-green-500/10", text: "text-green-400", icon: CheckCircle },
@@ -34,9 +35,30 @@ const categoryLabels: Record<string, string> = {
   closing_control: "Closing Control",
 };
 
+const scoreDimensionLabels: Record<string, string> = {
+  interaction_quality: "Interaction Quality",
+  operational_effectiveness: "Operational Effectiveness",
+  outcome_quality: "Outcome Quality",
+};
+
+const scoreDimensionDescriptions: Record<string, { description: string; weight: string }> = {
+  interaction_quality: {
+    description: "How well you communicated, listened, and handled the customer moment to moment.",
+    weight: "20%",
+  },
+  operational_effectiveness: {
+    description: "How clearly you explained the issue, set expectations, and moved the situation forward.",
+    weight: "25%",
+  },
+  outcome_quality: {
+    description: "Whether the issue actually landed in a clean result, valid redirect, or usable next step.",
+    weight: "55%",
+  },
+};
+
 export default function SessionResults() {
   const [, setLocation] = useLocation();
-  const { config, evaluation, coaching, saveStatus, savedSessionId, setConfig } = useSimulator();
+  const { config, evaluation, coaching, managerDebrief, saveStatus, savedSessionId, setConfig, stateHistory } = useSimulator();
   const [showCategories, setShowCategories] = useState(false);
 
   if (!evaluation) return <Redirect to="/" />;
@@ -45,6 +67,13 @@ export default function SessionResults() {
   const PfIcon = pf.icon;
   const score = evaluation.overall_score || 0;
   const categories = evaluation.category_scores || {};
+  const scoreDimensions = evaluation.score_dimensions || null;
+  const debrief = buildPostCallDebrief({
+    stateHistory,
+    evaluation,
+    coaching,
+    managerDebrief,
+  });
   const clearAssignmentContext = () => {
     setConfig({
       ...config,
@@ -94,6 +123,264 @@ export default function SessionResults() {
                 : "Finalizing your session."}
           </div>
         </div>
+
+        {scoreDimensions && (
+          <div className="panel p-4">
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase">Score Dimensions</div>
+                <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                  Your final score is split into three parts so a warm conversation without a real outcome does not
+                  score too well.
+                </p>
+              </div>
+              <Badge variant="outline" className="text-[10px] font-mono border-border shrink-0">
+                Outcome Weighted
+              </Badge>
+            </div>
+            <div className="space-y-3">
+              {Object.entries(scoreDimensions).map(([key, value]) => (
+                <div key={key} className="rounded-xl border border-border bg-background/40 p-3">
+                  <div className="flex justify-between items-start gap-3 text-xs mb-2">
+                    <div>
+                      <div className="text-foreground font-medium">{scoreDimensionLabels[key] || key}</div>
+                      <div className="mt-1 text-muted-foreground leading-relaxed">
+                        {scoreDimensionDescriptions[key]?.description || "Scored from the evidence in your session."}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="font-mono text-foreground">{value}/100</div>
+                      <div className="text-[10px] text-muted-foreground font-mono">
+                        Weight {scoreDimensionDescriptions[key]?.weight || "--"}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mb-2">
+                    <Progress value={value} className="h-2" />
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {key === "outcome_quality"
+                      ? "This score stays low if there was no real resolution, accepted next step, or valid handoff."
+                      : key === "operational_effectiveness"
+                        ? "This score reflects whether you moved the issue forward in a practical, usable way."
+                        : "This score reflects the quality of your customer handling and communication."}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 rounded-xl border border-border bg-background/40 p-3">
+              <div className="text-[11px] font-mono text-muted-foreground uppercase tracking-wider mb-1">
+                Why This Matters
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Outcome quality is weighted most heavily, so a warm conversation without a real resolution or valid
+                redirect will still score lower overall.
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className="panel p-4">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase">Outcome Review</div>
+              <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                This is the after-call read on whether the issue actually landed, not just whether the conversation felt calm.
+              </p>
+            </div>
+            <Badge
+              variant="outline"
+              className={`text-[10px] font-mono border-0 ${
+                debrief.isActuallyResolved || debrief.escalationWasValid
+                  ? "bg-green-500/10 text-green-400"
+                  : debrief.outcomeState === "PARTIALLY_RESOLVED"
+                    ? "bg-amber-500/10 text-amber-400"
+                    : "bg-red-500/10 text-red-400"
+              }`}
+            >
+              {debrief.outcomeState.replace(/_/g, " ")}
+            </Badge>
+          </div>
+          <div className="space-y-3 text-sm">
+            <div className="rounded-xl border border-border bg-background/40 p-3">
+              <div className="text-[11px] font-mono text-muted-foreground uppercase tracking-wider mb-1">
+                Why This Did Or Did Not Count As Complete
+              </div>
+              <p className="text-muted-foreground leading-relaxed">{debrief.whyThisDidOrDidNotCountAsComplete}</p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl border border-border bg-background/40 p-3">
+                <div className="text-[11px] font-mono text-muted-foreground uppercase tracking-wider mb-2">
+                  What The Customer Still Needed
+                </div>
+                {debrief.customerStillNeeded.length === 0 ? (
+                  <p className="text-muted-foreground">Nothing material was left open at the end.</p>
+                ) : (
+                  <ul className="space-y-1.5 text-muted-foreground">
+                    {debrief.customerStillNeeded.map((item) => (
+                      <li key={item} className="flex items-start gap-2">
+                        <AlertTriangle className="h-3.5 w-3.5 text-amber-400 mt-0.5 shrink-0" />
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="rounded-xl border border-border bg-background/40 p-3">
+                <div className="text-[11px] font-mono text-muted-foreground uppercase tracking-wider mb-2">
+                  Recommended Replay Focus
+                </div>
+                {debrief.recommendedReplayFocus.length === 0 ? (
+                  <p className="text-muted-foreground">Replay the moments where the customer’s tone changed and confirm the same outcome still lands.</p>
+                ) : (
+                  <ul className="space-y-1.5 text-muted-foreground">
+                    {debrief.recommendedReplayFocus.map((item) => (
+                      <li key={item} className="flex items-start gap-2">
+                        <ArrowRight className="h-3.5 w-3.5 text-teal mt-0.5 shrink-0" />
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="panel p-4">
+            <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase mb-2">Where Trust Moved</div>
+            <ul className="space-y-1.5">
+              {debrief.whereTrustMoved.map((item) => (
+                <li key={item} className="text-sm text-muted-foreground flex items-start gap-2">
+                  <ArrowRight className="h-3.5 w-3.5 text-teal mt-0.5 shrink-0" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="panel p-4">
+            <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase mb-2">What Changed The Customer’s Tone</div>
+            <ul className="space-y-1.5">
+              {(debrief.whatChangedCustomerTone.length > 0 ? debrief.whatChangedCustomerTone : debrief.emotionalProgression).map((item) => (
+                <li key={item} className="text-sm text-muted-foreground flex items-start gap-2">
+                  <ArrowRight className="h-3.5 w-3.5 text-teal mt-0.5 shrink-0" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
+        {debrief.prematureClosureAttempts.length > 0 && (
+          <div className="panel p-4">
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <div>
+                <div className="text-xs font-mono text-red-400 tracking-wider uppercase">Premature Closure Attempts</div>
+                <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                  These are the moments where you tried to land the conversation before the issue was actually ready to close.
+                </p>
+              </div>
+              <Badge variant="outline" className="border-0 bg-red-500/10 text-red-400 text-[10px] font-mono shrink-0">
+                Blocked By Design
+              </Badge>
+            </div>
+            <div className="space-y-3">
+              {debrief.prematureClosureAttempts.map((attempt) => (
+                <div key={`${attempt.turn}-${attempt.trigger}`} className="rounded-xl border border-border bg-background/40 p-3">
+                  <div className="text-xs font-mono text-muted-foreground uppercase tracking-wider">
+                    Turn {attempt.turn}
+                  </div>
+                  <p className="mt-1 text-sm text-foreground">Trigger: {attempt.trigger}</p>
+                  <div className="mt-2 text-sm text-muted-foreground">Customer reaction: {attempt.customerReaction}</div>
+                  <div className="mt-2 text-sm text-muted-foreground">Recovery: {attempt.recovery}</div>
+                  {attempt.unresolvedGaps.length > 0 && (
+                    <ul className="mt-2 space-y-1.5 text-sm text-muted-foreground">
+                      {attempt.unresolvedGaps.slice(0, 3).map((gap) => (
+                        <li key={gap} className="flex items-start gap-2">
+                          <AlertTriangle className="h-3.5 w-3.5 text-amber-400 mt-0.5 shrink-0" />
+                          <span>{gap}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(debrief.missedMoments.length > 0 || debrief.prematureClosureAttempted) && (
+          <div className="panel p-4">
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <div>
+                <div className="text-xs font-mono text-amber-400 tracking-wider uppercase">Missed Moments Tied To Actual Turns</div>
+                <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                  These are the moments that blocked completion or cost you credibility.
+                </p>
+              </div>
+              {debrief.prematureClosureAttempted && (
+                <Badge variant="outline" className="border-0 bg-red-500/10 text-red-400 text-[10px] font-mono shrink-0">
+                  Premature Closure Seen
+                </Badge>
+              )}
+            </div>
+            <div className="space-y-2">
+              {debrief.missedMoments.map((moment) => (
+                <div key={`${moment.turn}-${moment.title}`} className="rounded-xl border border-border bg-background/40 p-3">
+                  <div className="text-xs font-mono text-muted-foreground uppercase tracking-wider">
+                    Turn {moment.turn} · {moment.title}
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">{moment.detail}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(debrief.strongestPositiveBehaviors.length > 0 || debrief.bestRecoveryMoment || debrief.polishedButUnresolved) && (
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="panel p-4">
+              <div className="text-xs font-mono text-green-400 tracking-wider uppercase mb-2">Strongest Positive Behaviors</div>
+              {debrief.strongestPositiveBehaviors.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No clear positive patterns were captured beyond the scorecard.</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {debrief.strongestPositiveBehaviors.map((item) => (
+                    <li key={item} className="text-sm text-muted-foreground flex items-start gap-2">
+                      <CheckCircle className="h-3.5 w-3.5 text-green-400 mt-0.5 shrink-0" />
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {debrief.bestRecoveryMoment && (
+                <div className="mt-3 rounded-xl border border-border bg-background/40 p-3">
+                  <div className="text-[11px] font-mono text-muted-foreground uppercase tracking-wider mb-1">
+                    Best Recovery Moment
+                  </div>
+                  <p className="text-sm text-muted-foreground">{debrief.bestRecoveryMoment}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="panel p-4">
+              <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase mb-2">Interaction Vs Outcome</div>
+              <p className="text-sm text-muted-foreground leading-relaxed">{debrief.interactionVsOutcomeNote}</p>
+              <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+                <div>Valid next step: <span className="text-foreground font-mono">{debrief.hasValidNextStep ? "yes" : "no"}</span></div>
+                <div>Escalation valid: <span className="text-foreground font-mono">{debrief.escalationWasValid ? "yes" : "no"}</span></div>
+                <div>Issue actually resolved: <span className="text-foreground font-mono">{debrief.isActuallyResolved ? "yes" : "no"}</span></div>
+                {debrief.polishedButUnresolved && (
+                  <div className="rounded-xl border border-border bg-amber-500/5 p-3 text-amber-300">
+                    You sounded composed, but the conversation still ended without a clean outcome.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Category Scores */}
         <div className="panel p-4">

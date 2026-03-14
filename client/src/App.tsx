@@ -1,7 +1,7 @@
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
+import { Redirect, Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { SimulatorProvider } from "./contexts/SimulatorContext";
@@ -45,6 +45,10 @@ import { Input } from "@/components/ui/input";
 import { supabase } from "@/lib/supabase";
 import { trpc } from "@/lib/trpc";
 
+function LegacyVoiceTestRedirect() {
+  return <Redirect to="/practice" />;
+}
+
 function LoadingScreen() {
   return (
     <div className="min-h-screen bg-background flex items-center justify-center">
@@ -56,7 +60,7 @@ function LoadingScreen() {
   );
 }
 
-function LoginScreen() {
+function LoginScreen({ bootError }: { bootError?: string | null }) {
   const authConfigured = hasAuthConfig();
   const utils = trpc.useUtils();
   const [mode, setMode] = useState<"sign_in" | "sign_up">("sign_in");
@@ -111,6 +115,11 @@ function LoginScreen() {
             ? "Sign in with your Supabase-backed account."
             : "Supabase auth is not configured yet. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY."}
         </p>
+        {bootError && (
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-left text-sm text-amber-200">
+            {bootError}
+          </div>
+        )}
         {authConfigured ? (
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2">
@@ -204,6 +213,7 @@ function ManagerRouter() {
           <Route path="/manage/sessions" component={ManagerSessions} />
           <Route path="/manage/sessions/:id" component={SessionDetail} />
           <Route path="/manage/assignments" component={ManagerAssignments} />
+          <Route path="/manage/voice-test" component={LegacyVoiceTestRedirect} />
           {/* Admin pages */}
           <Route path="/manage/users" component={AdminUsers} />
           <Route path="/manage/scenarios" component={ManagerScenarios} />
@@ -226,10 +236,10 @@ function ManagerRouter() {
 }
 
 function AppRouter() {
-  const { user, loading } = useAuth();
+  const { user, loading, error } = useAuth();
 
   if (loading) return <LoadingScreen />;
-  if (!user) return <LoginScreen />;
+  if (!user) return <LoginScreen bootError={error instanceof Error ? error.message : null} />;
 
   const isManager = ["manager", "admin", "super_admin"].includes(user.role);
 

@@ -5,11 +5,12 @@
 export {
   generateScenario,
   getAdaptiveDifficulty,
-  processEmployeeTurn,
   runPostSessionEvaluation,
   updateEmployeeProfile,
   type EvaluationPipelineResult,
 } from "./services/ai/pipeline";
+
+export { processEmployeeTurn } from "./services/customer-runtime";
 
 export { AI_SERVICE_REGISTRY as PROMPT_REGISTRY } from "./services/ai/registry";
 export { runPrompt as callPrompt } from "./services/ai/prompt-runner";

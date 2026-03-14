@@ -1,4 +1,5 @@
 import { getLoginUrl } from "@/const";
+import { resolveSupabaseSession } from "@/_core/auth-bootstrap";
 import { supabase } from "@/lib/supabase";
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
@@ -15,15 +16,30 @@ export function useAuth(options?: UseAuthOptions) {
   const resolvedRedirectPath = redirectPath ?? getLoginUrl();
   const [sessionReady, setSessionReady] = useState(false);
   const [hasSession, setHasSession] = useState(false);
+  const [bootstrapStalled, setBootstrapStalled] = useState(false);
 
   useEffect(() => {
     let mounted = true;
-
-    supabase.auth.getSession().then(({ data }) => {
+    const failOpenTimer = window.setTimeout(() => {
       if (!mounted) return;
-      setHasSession(Boolean(data.session));
+      setHasSession(false);
       setSessionReady(true);
-    });
+    }, 4000);
+
+    void resolveSupabaseSession(supabase)
+      .then((session) => {
+        if (!mounted) return;
+        setHasSession(Boolean(session));
+        setSessionReady(true);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setHasSession(false);
+        setSessionReady(true);
+      })
+      .finally(() => {
+        window.clearTimeout(failOpenTimer);
+      });
 
     const {
       data: { subscription },
@@ -35,6 +51,7 @@ export function useAuth(options?: UseAuthOptions) {
 
     return () => {
       mounted = false;
+      window.clearTimeout(failOpenTimer);
       subscription.unsubscribe();
     };
   }, [utils.auth.me]);
@@ -44,6 +61,19 @@ export function useAuth(options?: UseAuthOptions) {
     retry: false,
     refetchOnWindowFocus: false,
   });
+
+  useEffect(() => {
+    if (!sessionReady || !hasSession || !meQuery.isLoading) {
+      setBootstrapStalled(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setBootstrapStalled(true);
+    }, 5000);
+
+    return () => window.clearTimeout(timer);
+  }, [hasSession, meQuery.isLoading, sessionReady]);
 
   const logoutMutation = trpc.auth.logout.useMutation({
     onSuccess: () => {
@@ -80,12 +110,15 @@ export function useAuth(options?: UseAuthOptions) {
       user: hasSession ? effectiveUser : null,
       actorUser: hasSession ? actorUser : null,
       impersonation: hasSession ? impersonation : null,
-      loading: !sessionReady || (hasSession && meQuery.isLoading) || logoutMutation.isPending,
-      error: meQuery.error ?? logoutMutation.error ?? null,
+      loading: !sessionReady || (hasSession && meQuery.isLoading && !bootstrapStalled) || logoutMutation.isPending,
+      error: meQuery.error
+        ?? logoutMutation.error
+        ?? (bootstrapStalled ? new Error("Authentication bootstrap timed out. The app did not get a usable session response.") : null),
       isAuthenticated: hasSession && Boolean(effectiveUser),
     };
   }, [
     actorUser,
+    bootstrapStalled,
     effectiveUser,
     hasSession,
     meQuery.error,

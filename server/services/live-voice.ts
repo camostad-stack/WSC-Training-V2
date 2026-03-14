@@ -1,14 +1,29 @@
 import { ENV } from "../_core/env";
 import type { ScenarioDirectorResult } from "./ai/contracts";
+import {
+  buildLiveCustomerSessionInstructions,
+  buildOpeningResponseInstructions,
+} from "./customer-runtime";
+import {
+  createCustomerVoiceCast,
+  listConfiguredVoiceProviders,
+  parseVoiceProviderList,
+  type CustomerVoiceCast,
+  type VoiceRenderProvider,
+} from "./voice-rendering";
 
 export interface LiveVoiceCredentialRequest {
   scenario: ScenarioDirectorResult;
   employeeRole: string;
+  sessionSeed?: string;
 }
 
 export interface LiveVoiceSessionCredentials {
   enabled: boolean;
-  provider: "openai-realtime-webrtc";
+  provider: VoiceRenderProvider;
+  transport: "openai-realtime-webrtc" | "browser-native-speech";
+  audioOutputMode: "realtime-native" | "external-rendered";
+  responseModalities: Array<"audio" | "text">;
   mode: "live_voice";
   model: string;
   voice: string;
@@ -16,6 +31,13 @@ export interface LiveVoiceSessionCredentials {
   clientSecret?: string;
   expiresAt?: number | null;
   sessionId?: string | null;
+  sessionSeed: string;
+  turnControl: "backend_validated_manual";
+  allowLocalBrowserFallback: boolean;
+  allowBrowserNativeAudioFallback: boolean;
+  voiceCast: CustomerVoiceCast;
+  qaCompareProviders: VoiceRenderProvider[];
+  openingResponseInstructions: string;
   instructions?: string;
   reason?: string;
 }
@@ -28,30 +50,68 @@ function buildRealtimeBaseUrl() {
   return ensureTrailingSlash(ENV.forgeApiUrl);
 }
 
-function buildLiveVoiceInstructions(scenario: ScenarioDirectorResult, employeeRole: string) {
-  return [
-    "You are the live voice customer for a Woodinville Sports Club training scenario.",
-    "Stay fully in character and speak like a natural customer on a phone call.",
-    "Use contractions, short pauses, and occasional hesitation where it feels natural.",
-    "Do not sound scripted, robotic, or like a trainer reading notes.",
-    "Keep wording conversational and specific to the problem the customer is calling about.",
-    "Do not coach the employee and do not reveal hidden facts unless they are earned.",
-    `Employee role: ${employeeRole}.`,
-    `Scenario family: ${scenario.scenario_family}.`,
-    `Customer name: ${scenario.customer_persona.name}.`,
-    `Customer communication style: ${scenario.customer_persona.communication_style}.`,
-    `Initial emotion: ${scenario.customer_persona.initial_emotion}.`,
-    `Situation summary: ${scenario.situation_summary}`,
-    `Opening line: ${scenario.opening_line}`,
-    `Approved resolution paths: ${(scenario.approved_resolution_paths || []).join("; ") || "None supplied."}`,
-    `Required behaviors to reward: ${(scenario.required_behaviors || []).join("; ") || "None supplied."}`,
-    `Critical errors to react strongly to: ${(scenario.critical_errors || []).join("; ") || "None supplied."}`,
-    `Hidden facts: ${(scenario.hidden_facts || []).join("; ") || "None supplied."}`,
-    "Begin the call by delivering the opening line naturally, as if you just reached the front desk or manager on duty.",
-    "After that, keep each reply to one natural spoken turn rather than a long monologue.",
-    "Keep the session trainable in roughly 3 to 5 turns unless the employee mishandles the interaction or escalation is required.",
-    "When the matter is clearly resolved or correctly escalated, wrap up naturally and stop pushing the issue.",
-  ].join("\n");
+function uniqueProviders(providers: VoiceRenderProvider[]) {
+  return Array.from(new Set(providers));
+}
+
+function resolveLiveRenderProviderOrder() {
+  const configuredProviders = listConfiguredVoiceProviders();
+  const configuredSet = new Set(configuredProviders);
+  const preferredFromEnv = parseVoiceProviderList(ENV.voiceRenderPrimaryProvider)[0];
+  const fallbackFromEnv = parseVoiceProviderList(ENV.voiceRenderFallbackProviders);
+  const preferredProvider = ENV.voiceRenderMode === "realtime-native"
+    ? "openai-realtime-native"
+    : preferredFromEnv;
+  const ordered = uniqueProviders([
+    ...(preferredProvider ? [preferredProvider] : []),
+    ...fallbackFromEnv,
+    ...configuredProviders,
+  ]).filter((provider) => configuredSet.has(provider));
+
+  if (ENV.voiceRenderMode === "external-provider") {
+    const externalOnly = ordered.filter((provider) => (
+      provider !== "openai-realtime-native"
+      && (ENV.voiceRenderAllowBrowserNativeFallback || provider !== "browser-native-speech")
+    ));
+    return externalOnly;
+  }
+
+  const filtered = ordered.filter((provider) => (
+    ENV.voiceRenderAllowBrowserNativeFallback
+    || provider !== "browser-native-speech"
+  ));
+  return filtered;
+}
+
+function buildQaCompareProviders(primaryProvider: VoiceRenderProvider, configuredProviders: VoiceRenderProvider[]) {
+  const baselineProvider = parseVoiceProviderList(ENV.voiceRenderQaBaselineProvider)[0] || "openai-native-speech";
+  const configuredSet = new Set(configuredProviders);
+  return uniqueProviders([
+    primaryProvider,
+    baselineProvider,
+    "openai-native-speech",
+  ]).filter((provider) => configuredSet.has(provider) && provider !== "browser-native-speech");
+}
+
+function resolveAudioOutputMode(provider: VoiceRenderProvider): "realtime-native" | "external-rendered" {
+  return provider === "openai-realtime-native" && ENV.voiceRenderMode === "realtime-native"
+    ? "realtime-native"
+    : "external-rendered";
+}
+
+export function buildLiveVoiceInstructions(scenario: ScenarioDirectorResult, employeeRole: string) {
+  const [preferredProvider] = resolveLiveRenderProviderOrder();
+  const voiceCast = createCustomerVoiceCast({
+    scenario,
+    sessionSeed: `${scenario.scenario_id}:preview`,
+    preferredProvider,
+    allowedProviders: resolveLiveRenderProviderOrder(),
+  });
+  return buildLiveCustomerSessionInstructions({
+    scenario,
+    employeeRole,
+    voiceCast,
+  });
 }
 
 function buildConnectionUrl(model: string) {
@@ -67,17 +127,73 @@ export async function createLiveVoiceSessionCredentials(
   input: LiveVoiceCredentialRequest,
 ): Promise<LiveVoiceSessionCredentials> {
   const model = ENV.realtimeModel;
-  const voice = ENV.realtimeVoice;
-  const instructions = buildLiveVoiceInstructions(input.scenario, input.employeeRole);
+  const sessionSeed = input.sessionSeed || `${input.scenario.scenario_id}-live`;
+  const providerOrder = resolveLiveRenderProviderOrder();
+  const preferredProvider = providerOrder[0] || "browser-native-speech";
+  const voiceCast = createCustomerVoiceCast({
+    scenario: input.scenario,
+    sessionSeed,
+    preferredProvider,
+    allowedProviders: providerOrder,
+  });
+  const audioOutputMode = resolveAudioOutputMode(voiceCast.provider);
+  const responseModalities = audioOutputMode === "realtime-native"
+    ? ["audio", "text"] as Array<"audio" | "text">
+    : ["text"] as Array<"audio" | "text">;
+  const configuredProviders = listConfiguredVoiceProviders();
+  const qaCompareProviders = buildQaCompareProviders(voiceCast.provider, configuredProviders);
+  const voice = audioOutputMode === "realtime-native" ? voiceCast.voiceId : ENV.realtimeVoice;
+  const instructions = buildLiveCustomerSessionInstructions({
+    scenario: input.scenario,
+    employeeRole: input.employeeRole,
+    voiceCast,
+  });
+  const openingResponseInstructions = buildOpeningResponseInstructions({
+    scenario: input.scenario,
+    voiceCast,
+  });
 
-  if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
+  if (providerOrder.length === 0) {
     return {
       enabled: false,
-      provider: "openai-realtime-webrtc",
+      provider: voiceCast.provider,
+      transport: "openai-realtime-webrtc",
+      audioOutputMode,
+      responseModalities,
       mode: "live_voice",
       model,
       voice,
       connectionUrl: buildConnectionUrl(model),
+      sessionSeed,
+      turnControl: "backend_validated_manual",
+      allowLocalBrowserFallback: ENV.liveVoiceAllowLocalBrowserFallback,
+      allowBrowserNativeAudioFallback: ENV.voiceRenderAllowBrowserNativeFallback,
+      voiceCast,
+      qaCompareProviders,
+      openingResponseInstructions,
+      instructions,
+      reason: "No provider-backed live voice renderer is configured. Browser fallback is disabled for this environment.",
+    };
+  }
+
+  if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
+    return {
+      enabled: false,
+      provider: voiceCast.provider,
+      transport: "browser-native-speech",
+      audioOutputMode,
+      responseModalities,
+      mode: "live_voice",
+      model,
+      voice,
+      connectionUrl: buildConnectionUrl(model),
+      sessionSeed,
+      turnControl: "backend_validated_manual",
+      allowLocalBrowserFallback: ENV.liveVoiceAllowLocalBrowserFallback,
+      allowBrowserNativeAudioFallback: ENV.voiceRenderAllowBrowserNativeFallback,
+      voiceCast,
+      qaCompareProviders,
+      openingResponseInstructions,
       instructions,
       reason: "Realtime session credentials are not configured on the server.",
     };
@@ -92,7 +208,7 @@ export async function createLiveVoiceSessionCredentials(
         input: {
           turn_detection: {
             type: "server_vad",
-            create_response: true,
+            create_response: false,
             interrupt_response: true,
           },
           transcription: {
@@ -123,15 +239,25 @@ export async function createLiveVoiceSessionCredentials(
     if (!response.ok) {
       const message = await response.text().catch(() => response.statusText);
       return {
-        enabled: false,
-        provider: "openai-realtime-webrtc",
-        mode: "live_voice",
-        model,
-        voice,
-        connectionUrl: buildConnectionUrl(model),
-        instructions,
-        reason: `Realtime credential request failed (${response.status} ${response.statusText}): ${message}`,
-      };
+      enabled: false,
+      provider: voiceCast.provider,
+      transport: "openai-realtime-webrtc",
+      audioOutputMode,
+      responseModalities,
+      mode: "live_voice",
+      model,
+      voice,
+      connectionUrl: buildConnectionUrl(model),
+      sessionSeed,
+      turnControl: "backend_validated_manual",
+      allowLocalBrowserFallback: ENV.liveVoiceAllowLocalBrowserFallback,
+      allowBrowserNativeAudioFallback: ENV.voiceRenderAllowBrowserNativeFallback,
+      voiceCast,
+      qaCompareProviders,
+      openingResponseInstructions,
+      instructions,
+      reason: `Realtime credential request failed (${response.status} ${response.statusText}): ${message}`,
+    };
     }
 
     const json = await response.json() as {
@@ -147,11 +273,21 @@ export async function createLiveVoiceSessionCredentials(
     if (!clientSecret) {
       return {
         enabled: false,
-        provider: "openai-realtime-webrtc",
+        provider: voiceCast.provider,
+        transport: "openai-realtime-webrtc",
+        audioOutputMode,
+        responseModalities,
         mode: "live_voice",
         model,
         voice,
         connectionUrl: buildConnectionUrl(model),
+        sessionSeed,
+        turnControl: "backend_validated_manual",
+        allowLocalBrowserFallback: ENV.liveVoiceAllowLocalBrowserFallback,
+        allowBrowserNativeAudioFallback: ENV.voiceRenderAllowBrowserNativeFallback,
+        voiceCast,
+        qaCompareProviders,
+        openingResponseInstructions,
         instructions,
         reason: "Realtime credential response did not include a client secret.",
       };
@@ -159,7 +295,10 @@ export async function createLiveVoiceSessionCredentials(
 
     return {
       enabled: true,
-      provider: "openai-realtime-webrtc",
+      provider: voiceCast.provider,
+      transport: "openai-realtime-webrtc",
+      audioOutputMode,
+      responseModalities,
       mode: "live_voice",
       model,
       voice,
@@ -167,16 +306,33 @@ export async function createLiveVoiceSessionCredentials(
       clientSecret,
       expiresAt,
       sessionId: json.id ?? null,
+      sessionSeed,
+      turnControl: "backend_validated_manual",
+      allowLocalBrowserFallback: ENV.liveVoiceAllowLocalBrowserFallback,
+      allowBrowserNativeAudioFallback: ENV.voiceRenderAllowBrowserNativeFallback,
+      voiceCast,
+      qaCompareProviders,
+      openingResponseInstructions,
       instructions,
     };
   } catch (error) {
     return {
       enabled: false,
-      provider: "openai-realtime-webrtc",
+      provider: voiceCast.provider,
+      transport: "openai-realtime-webrtc",
+      audioOutputMode,
+      responseModalities,
       mode: "live_voice",
       model,
       voice,
       connectionUrl: buildConnectionUrl(model),
+      sessionSeed,
+      turnControl: "backend_validated_manual",
+      allowLocalBrowserFallback: ENV.liveVoiceAllowLocalBrowserFallback,
+      allowBrowserNativeAudioFallback: ENV.voiceRenderAllowBrowserNativeFallback,
+      voiceCast,
+      qaCompareProviders,
+      openingResponseInstructions,
       instructions,
       reason: error instanceof Error ? error.message : "Realtime credential request failed.",
     };

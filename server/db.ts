@@ -25,6 +25,9 @@ export async function getDb(): Promise<Database> {
 
     try {
       _client = createClient(ENV.databaseUrl);
+      // Local and preview environments should fail slowly rather than crashing on a
+      // short database statement timeout while the UI is booting.
+      await _client`set statement_timeout = 0`;
       _db = drizzle(_client, { schema });
     } catch (error) {
       if (_client) {

@@ -15,6 +15,7 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "audit:customer-sim": "node --import tsx scripts/customer-simulation-harness.ts",
+    "audit:voice-realism": "node --import tsx scripts/voice-realism-evals.ts",
     "audit:live-voice": "node --import tsx scripts/live-voice-bot-audit.ts",
     "db:seed": "tsx server/seed.ts",
     "db:push": "drizzle-kit push",

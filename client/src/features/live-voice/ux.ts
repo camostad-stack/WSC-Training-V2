@@ -1,3 +1,6 @@
+import type { SimulationStateSnapshot } from "@/features/simulator/types";
+import { isTerminalConversationState } from "@shared/conversation-outcome";
+
 export type LiveVoiceMode = "realtime" | "browser_voice" | "fallback";
 export type LiveVoiceAssistantPhase =
   | "setup"
@@ -5,7 +8,6 @@ export type LiveVoiceAssistantPhase =
   | "listening"
   | "processing"
   | "paused"
-  | "ready_to_wrap"
   | "ended"
   | "error";
 
@@ -21,14 +23,17 @@ export function getLiveVoiceGuidance(params: {
   assistantPhase: LiveVoiceAssistantPhase;
   isMuted: boolean;
   transcriptTurns: number;
-  employeeTurns: number;
-  recommendedTurns: number;
+  latestState?: SimulationStateSnapshot | null;
+  sessionActive?: boolean;
+  terminalStateValidated?: boolean;
+  complaintStillOpen?: boolean;
+  liveRuntimeFailureState?: "timeout_failure" | "abandonment_detected" | null;
   lastError?: string | null;
 }): LiveVoiceGuidance {
   if (params.connectionState === "fallback" || params.voiceMode === "fallback") {
     return {
       title: "Voice unavailable here",
-      detail: "This device or server setup cannot complete a live voice call. Use text practice for this exact scenario instead.",
+      detail: "This device or server setup cannot keep the call live. Switch to a typed conversation for this caller.",
       tone: "warning",
     };
   }
@@ -44,7 +49,7 @@ export function getLiveVoiceGuidance(params: {
   if (params.connectionState === "requesting_credentials" || params.connectionState === "connecting" || params.connectionState === "reconnecting") {
     return {
       title: "Connecting the call",
-      detail: "Stay on this screen. The voice session is still setting up.",
+      detail: "Stay on this screen while the call connects.",
       tone: "info",
     };
   }
@@ -57,18 +62,34 @@ export function getLiveVoiceGuidance(params: {
     };
   }
 
+  if (params.liveRuntimeFailureState === "timeout_failure") {
+    return {
+      title: "Call timed out",
+      detail: "The caller never reached a clear outcome before the call timed out.",
+      tone: "danger",
+    };
+  }
+
+  if (params.terminalStateValidated) {
+    return {
+      title: "Call ended",
+      detail: "The call has reached a valid ending and is ready for review.",
+      tone: "neutral",
+    };
+  }
+
   if (params.assistantPhase === "customer_speaking") {
     return {
-      title: "Listen first",
-      detail: "The customer is talking. Wait for them to finish, then give a direct answer and next step.",
+      title: "Caller is speaking",
+      detail: "Let them finish before you answer.",
       tone: "info",
     };
   }
 
   if (params.assistantPhase === "processing") {
     return {
-      title: "Customer is responding",
-      detail: "Hold for the next customer reply. The system is processing your last answer.",
+      title: "Caller is responding",
+      detail: "Hold for the next reply.",
       tone: "info",
     };
   }
@@ -81,38 +102,38 @@ export function getLiveVoiceGuidance(params: {
     };
   }
 
-  if (params.assistantPhase === "ready_to_wrap") {
-    return {
-      title: "Ready to finish",
-      detail: "You have enough conversation saved for scoring. End the call now, or give one more clean closing response.",
-      tone: "success",
-    };
-  }
-
   if (params.connectionState === "connected" && params.transcriptTurns <= 1) {
     return {
-      title: "Start with a calm first answer",
-      detail: "Acknowledge the problem, explain what you will check, and give the next concrete step.",
+      title: "Call is live",
+      detail: "Listen to the caller and answer in your own words.",
       tone: "info",
     };
   }
 
-  if (params.assistantPhase === "listening") {
-    const turnsRemaining = Math.max(0, params.recommendedTurns - params.employeeTurns);
-    return {
-      title: "Speak naturally",
-      detail: turnsRemaining > 0
-        ? `Aim for ${Math.max(3, params.recommendedTurns)} total employee turns. Keep your answer direct and practical.`
-        : "You can close this out now if the issue is resolved.",
-      tone: "success",
-    };
+  const latestState = params.latestState;
+  if (latestState && !isTerminalConversationState(latestState)) {
+    if (latestState.premature_closure_detected) {
+      return {
+        title: "Call is still active",
+        detail: "The caller is still expecting more from the conversation.",
+        tone: "warning",
+      };
+    }
+
+    if (params.complaintStillOpen || params.sessionActive) {
+      return {
+        title: "Stay with the call",
+        detail: "Keep listening and responding until the caller is genuinely ready to end.",
+        tone: "info",
+      };
+    }
   }
 
-  if (params.connectionState === "ended") {
+  if (params.assistantPhase === "listening") {
     return {
-      title: "Call ended",
-      detail: "The session is being saved and prepared for scoring.",
-      tone: "neutral",
+      title: "Your turn",
+      detail: "Answer naturally and keep the conversation moving.",
+      tone: "info",
     };
   }
 

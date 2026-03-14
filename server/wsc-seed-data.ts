@@ -1,6 +1,44 @@
 import { departmentRoles } from "../shared/wsc-content";
 
-export const WSC_SCENARIO_TEMPLATE_SEEDS = [
+type WscScenarioTemplateSeed = {
+  title: string;
+  department: "customer_service" | "golf" | "mod_emergency";
+  scenarioFamily: string;
+  targetRole: string;
+  difficulty: number;
+  emotionalIntensity: "low" | "moderate" | "high";
+  complexity: "simple" | "mixed" | "ambiguous";
+  customerPersona: {
+    name: string;
+    age_band: string;
+    membership_context: string;
+    communication_style: string;
+    initial_emotion: string;
+    patience_level: string;
+  };
+  situationSummary: string;
+  openingLine: string;
+  hiddenFacts?: string[];
+  approvedResolutionPaths?: string[];
+  requiredBehaviors?: string[];
+  criticalErrors?: string[];
+  branchLogic?: Record<string, string>;
+  emotionProgression?: {
+    starting_state: string;
+    better_if: string[];
+    worse_if: string[];
+  };
+  completionRules?: {
+    resolved_if: string[];
+    end_early_if: string[];
+    manager_required_if: string[];
+  };
+  completionCriteria?: string[];
+  failureCriteria?: string[];
+  recommendedTurns?: number;
+};
+
+export const WSC_SCENARIO_TEMPLATE_SEEDS: WscScenarioTemplateSeed[] = [
   {
     title: "Front Desk Billing Charge Review",
     department: "customer_service",
@@ -111,6 +149,16 @@ export const WSC_SCENARIO_TEMPLATE_SEEDS = [
       end_early_if: ["Employee invents policy or gets argumentative"],
       manager_required_if: ["Member requests exception or supervisor"],
     },
+    completionCriteria: [
+      "policy clearly explained",
+      "customer acknowledged next step or escalation",
+      "employee gave ownership or redirect",
+    ],
+    failureCriteria: [
+      "employee ended conversation without outcome",
+      "customer still confused at end",
+      "no clear next step",
+    ],
     recommendedTurns: 4,
   },
   {

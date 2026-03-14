@@ -41,6 +41,8 @@ import { assertManagerCanAccessEmployee, assertManagerCanAccessSession, isGlobal
 import { markAssignmentInProgress } from "./services/assignments";
 import { logAudit } from "./services/audit-log";
 import { createLiveVoiceSessionCredentials } from "./services/live-voice";
+import { processEmployeeTurn as processLiveConversationTurn } from "./services/customer-runtime";
+import { compareVoiceProvidersForLine, renderVoiceLineWithDiagnostics } from "./services/voice-rendering";
 import { ingestPolicyDocument } from "./services/policy-ingestion";
 import { normalizeDepartment } from "./services/normalizers";
 import { normalizePolicyScenarioFamilies } from "./services/policy-matching";
@@ -50,6 +52,7 @@ import { getSupabaseAdmin } from "./_core/supabase";
 import { ENV } from "./_core/env";
 import { createSignedStorageUrl } from "./storage";
 import { WSC_SCENARIO_TEMPLATE_SEEDS } from "./wsc-seed-data";
+import { deriveCompletionCriteria, deriveFailureCriteria, deriveScenarioHumanContext } from "../shared/wsc-content";
 
 // ─── Manager Procedure (manager, admin, super_admin) ───
 const managerProcedure = protectedProcedure.use(async ({ ctx, next }) => {
@@ -73,10 +76,14 @@ const performanceSignalEnum = z.enum(PERFORMANCE_SIGNALS);
 const sessionQualityEnum = z.enum(SESSION_QUALITY_VALUES);
 
 function clampRecommendedTurns(value?: number) {
-  return Math.max(3, Math.min(5, value ?? 4));
+  return Math.max(2, Math.min(12, value ?? 4));
 }
 
 function buildScenarioFromTemplate(t: typeof scenarioTemplates.$inferSelect) {
+  const humanContext = deriveScenarioHumanContext({
+    department: t.department,
+    scenario_family: t.scenarioFamily,
+  });
   return {
     scenario_id: `tmpl-${t.id}`,
     department: t.department,
@@ -87,12 +94,32 @@ function buildScenarioFromTemplate(t: typeof scenarioTemplates.$inferSelect) {
     situation_summary: t.situationSummary,
     opening_line: t.openingLine,
     hidden_facts: t.hiddenFacts || [],
+    motive: humanContext.motive,
+    hidden_context: humanContext.hidden_context,
+    personality_style: humanContext.personality_style,
+    past_history: humanContext.past_history,
+    pressure_context: humanContext.pressure_context,
+    friction_points: humanContext.friction_points,
+    emotional_triggers: humanContext.emotional_triggers,
+    likely_assumptions: humanContext.likely_assumptions,
+    what_hearing_them_out_sounds_like: humanContext.what_hearing_them_out_sounds_like,
+    credible_next_steps: humanContext.credible_next_steps,
+    calm_down_if: humanContext.calm_down_if,
+    lose_trust_if: humanContext.lose_trust_if,
     approved_resolution_paths: t.approvedResolutionPaths || [],
     required_behaviors: t.requiredBehaviors || [],
     critical_errors: t.criticalErrors || [],
     branch_logic: t.branchLogic || {},
     emotion_progression: t.emotionProgression || { starting_state: "frustrated", better_if: [], worse_if: [] },
     completion_rules: t.completionRules || { resolved_if: [], end_early_if: [], manager_required_if: [] },
+    completion_criteria: deriveCompletionCriteria({
+      approvedResolutionPaths: t.approvedResolutionPaths,
+      requiredBehaviors: t.requiredBehaviors,
+      completionRules: t.completionRules as any,
+    }),
+    failure_criteria: deriveFailureCriteria({
+      completionRules: t.completionRules as any,
+    }),
     recommended_turns: clampRecommendedTurns(t.recommendedTurns),
   };
 }
@@ -115,6 +142,10 @@ function buildScenarioFromSeed(input: {
   const selected = candidates[0]
     ?? WSC_SCENARIO_TEMPLATE_SEEDS.find((seed) => seed.department === input.department)
     ?? WSC_SCENARIO_TEMPLATE_SEEDS[0];
+  const humanContext = deriveScenarioHumanContext({
+    department: selected.department,
+    scenario_family: selected.scenarioFamily,
+  });
 
   return {
     scenario_id: `seed-${selected.scenarioFamily}-${selected.difficulty}`,
@@ -126,12 +157,34 @@ function buildScenarioFromSeed(input: {
     situation_summary: selected.situationSummary,
     opening_line: selected.openingLine,
     hidden_facts: selected.hiddenFacts || [],
+    motive: humanContext.motive,
+    hidden_context: humanContext.hidden_context,
+    personality_style: humanContext.personality_style,
+    past_history: humanContext.past_history,
+    pressure_context: humanContext.pressure_context,
+    friction_points: humanContext.friction_points,
+    emotional_triggers: humanContext.emotional_triggers,
+    likely_assumptions: humanContext.likely_assumptions,
+    what_hearing_them_out_sounds_like: humanContext.what_hearing_them_out_sounds_like,
+    credible_next_steps: humanContext.credible_next_steps,
+    calm_down_if: humanContext.calm_down_if,
+    lose_trust_if: humanContext.lose_trust_if,
     approved_resolution_paths: selected.approvedResolutionPaths || [],
     required_behaviors: selected.requiredBehaviors || [],
     critical_errors: selected.criticalErrors || [],
     branch_logic: selected.branchLogic || {},
     emotion_progression: selected.emotionProgression || { starting_state: "frustrated", better_if: [], worse_if: [] },
     completion_rules: selected.completionRules || { resolved_if: [], end_early_if: [], manager_required_if: [] },
+    completion_criteria: deriveCompletionCriteria({
+      approvedResolutionPaths: selected.approvedResolutionPaths,
+      requiredBehaviors: selected.requiredBehaviors,
+      completionRules: selected.completionRules,
+      completionCriteria: selected.completionCriteria,
+    }),
+    failure_criteria: deriveFailureCriteria({
+      completionRules: selected.completionRules,
+      failureCriteria: selected.failureCriteria,
+    }),
     recommended_turns: clampRecommendedTurns(selected.recommendedTurns),
   };
 }
@@ -395,6 +448,7 @@ export const appRouter = router({
       .input(z.object({
         scenarioJson: z.any(),
         stateJson: z.any().optional(),
+        deliveryAnalysis: z.any().optional(),
         transcript: z.array(z.object({
           role: z.enum(["customer", "employee"]),
           message: z.string(),
@@ -460,15 +514,7 @@ export const appRouter = router({
           atMs: z.number(),
           detail: z.string().optional(),
         })).optional(),
-        stateHistory: z.array(z.object({
-          turn_number: z.number(),
-          emotion_state: z.string(),
-          trust_level: z.number(),
-          issue_clarity: z.number(),
-          employee_flags: z.record(z.string(), z.boolean()),
-          escalation_required: z.boolean(),
-          scenario_risk_level: z.string(),
-        })).optional(),
+        stateHistory: z.array(z.any()).optional(),
         turnCount: z.number().optional(),
         policyGrounding: z.any().optional(),
         visibleBehavior: z.any().optional(),
@@ -506,11 +552,81 @@ export const appRouter = router({
       .input(z.object({
         scenarioJson: z.any(),
         employeeRole: z.string(),
+        sessionSeed: z.string().optional(),
       }))
       .mutation(async ({ input }) => {
         return await createLiveVoiceSessionCredentials({
           scenario: input.scenarioJson,
           employeeRole: input.employeeRole,
+          sessionSeed: input.sessionSeed,
+        });
+      }),
+    processTurn: protectedProcedure
+      .input(z.object({
+        scenarioJson: z.any(),
+        stateJson: z.any().optional(),
+        deliveryAnalysis: z.any().optional(),
+        transcript: z.array(z.object({
+          role: z.enum(["customer", "employee"]),
+          message: z.string(),
+          emotion: z.string().optional(),
+        })),
+        employeeResponse: z.string(),
+        sessionSeed: z.string().optional(),
+        preferredVoiceProvider: z.enum([
+          "openai-realtime-native",
+          "openai-native-speech",
+          "cartesia",
+          "elevenlabs",
+          "browser-native-speech",
+        ]).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        return await processLiveConversationTurn(input);
+      }),
+    renderSpeech: protectedProcedure
+      .input(z.object({
+        text: z.string().min(1),
+        voiceCast: z.any(),
+      }))
+      .mutation(async ({ input }) => {
+        const rendered = await renderVoiceLineWithDiagnostics({
+          text: input.text,
+          cast: input.voiceCast,
+        });
+        return {
+          provider: rendered.synthesis.provider,
+          voiceId: rendered.synthesis.voiceId,
+          contentType: rendered.synthesis.contentType,
+          audioBase64: Buffer.from(rendered.synthesis.audio).toString("base64"),
+          didFallback: rendered.synthesis.didFallback,
+          fallbackEvent: rendered.synthesis.fallbackEvent,
+          diagnostics: rendered.diagnostics,
+        };
+      }),
+    compareRenderers: protectedProcedure
+      .input(z.object({
+        text: z.string().min(1),
+        voiceCast: z.any(),
+        providers: z.array(z.enum([
+          "openai-realtime-native",
+          "openai-native-speech",
+          "cartesia",
+          "elevenlabs",
+          "browser-native-speech",
+        ])).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const providers = input.providers && input.providers.length > 0
+          ? input.providers
+          : [input.voiceCast?.provider, "openai-native-speech"].filter(
+              (provider): provider is "openai-realtime-native" | "openai-native-speech" | "cartesia" | "elevenlabs" | "browser-native-speech" =>
+                typeof provider === "string",
+            );
+        return await compareVoiceProvidersForLine({
+          text: input.text,
+          cast: input.voiceCast,
+          providers,
         });
       }),
   }),
@@ -885,7 +1001,7 @@ export const appRouter = router({
         branchLogic: z.any().optional(),
         emotionProgression: z.any().optional(),
         completionRules: z.any().optional(),
-        recommendedTurns: z.number().min(3).max(5).default(4),
+        recommendedTurns: z.number().min(2).max(12).default(4),
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
@@ -920,7 +1036,7 @@ export const appRouter = router({
         hiddenFacts: z.array(z.string()).optional(),
         requiredBehaviors: z.array(z.string()).optional(),
         criticalErrors: z.array(z.string()).optional(),
-        recommendedTurns: z.number().min(3).max(5).optional(),
+        recommendedTurns: z.number().min(2).max(12).optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();

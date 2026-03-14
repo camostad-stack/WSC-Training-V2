@@ -9,8 +9,6 @@ describe("getLiveVoiceGuidance", () => {
       assistantPhase: "setup",
       isMuted: false,
       transcriptTurns: 0,
-      employeeTurns: 0,
-      recommendedTurns: 4,
     });
 
     expect(result.title).toContain("microphone");
@@ -24,41 +22,83 @@ describe("getLiveVoiceGuidance", () => {
       assistantPhase: "customer_speaking",
       isMuted: false,
       transcriptTurns: 2,
-      employeeTurns: 0,
-      recommendedTurns: 4,
     });
 
-    expect(result.title).toContain("Listen");
-    expect(result.detail).toContain("customer is talking");
+    expect(result.title).toContain("Caller is speaking");
+    expect(result.detail).toContain("finish");
   });
 
-  it("encourages a direct response while the mic is listening", () => {
+  it("keeps listening guidance generic instead of coaching to hidden criteria", () => {
     const result = getLiveVoiceGuidance({
       connectionState: "connected",
       voiceMode: "browser_voice",
       assistantPhase: "listening",
       isMuted: false,
       transcriptTurns: 3,
-      employeeTurns: 1,
-      recommendedTurns: 4,
     });
 
-    expect(result.title).toContain("Speak");
-    expect(result.tone).toBe("success");
+    expect(result.title).toContain("Your turn");
+    expect(result.tone).toBe("info");
+    expect(result.detail.toLowerCase()).not.toContain("next step");
+    expect(result.detail.toLowerCase()).not.toContain("criteria");
   });
 
-  it("tells the employee they can wrap once enough turns are captured", () => {
+  it("keeps unresolved-call guidance human and does not expose hidden state labels", () => {
     const result = getLiveVoiceGuidance({
       connectionState: "connected",
       voiceMode: "browser_voice",
-      assistantPhase: "ready_to_wrap",
+      assistantPhase: "listening",
       isMuted: false,
       transcriptTurns: 7,
-      employeeTurns: 3,
-      recommendedTurns: 4,
+      latestState: {
+        turn_number: 4,
+        emotion_state: "guarded",
+        trust_level: 4,
+        issue_clarity: 5,
+        unresolved_questions: ["Who is actually following up with me, and when?"],
+        unmet_completion_criteria: ["customer acknowledged next step or escalation"],
+        premature_closure_detected: true,
+      },
     });
 
-    expect(result.title).toContain("finish");
-    expect(result.tone).toBe("success");
+    expect(result.title).toContain("still active");
+    expect(result.detail.toLowerCase()).not.toContain("following up");
+    expect(result.detail.toLowerCase()).not.toContain("completion");
+    expect(result.tone).toBe("warning");
+  });
+
+  it("treats timeout as a failure state instead of a successful ending", () => {
+    const result = getLiveVoiceGuidance({
+      connectionState: "ended",
+      voiceMode: "browser_voice",
+      assistantPhase: "error",
+      isMuted: false,
+      transcriptTurns: 6,
+      liveRuntimeFailureState: "timeout_failure",
+    });
+
+    expect(result.title).toContain("timed out");
+    expect(result.tone).toBe("danger");
+  });
+
+  it("shows a terminal message only when the backend has validated a terminal outcome", () => {
+    const result = getLiveVoiceGuidance({
+      connectionState: "connected",
+      voiceMode: "browser_voice",
+      assistantPhase: "processing",
+      isMuted: false,
+      transcriptTurns: 6,
+      terminalStateValidated: true,
+      latestState: {
+        turn_number: 6,
+        emotion_state: "calm",
+        trust_level: 8,
+        issue_clarity: 8,
+        terminal_validation_reason: "Conversation reached a validated resolution.",
+      },
+    });
+
+    expect(result.title).toContain("Call ended");
+    expect(result.detail).toContain("ready for review");
   });
 });

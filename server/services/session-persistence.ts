@@ -10,6 +10,7 @@ import {
   turnEventsSchema,
 } from "./ai/contracts";
 import { updateAssignmentCompletionIfNeeded } from "./assignments";
+import { evaluateConversationTerminalState, getConversationOutcomeState } from "../../shared/conversation-outcome";
 import {
   normalizeDepartment,
   normalizePassFail,
@@ -83,8 +84,29 @@ export function buildSessionValues(userId: number, input: SaveSimulationSessionI
   const transcript = validatedArtifacts.data.transcript;
   const turnEvents = turnEventsSchema.safeParse(input.turnEvents).success ? turnEventsSchema.parse(input.turnEvents) : [];
   const timingMarkers = timingMarkersSchema.safeParse(input.timingMarkers).success ? timingMarkersSchema.parse(input.timingMarkers) : [];
-  const stateHistory = validatedArtifacts.data.stateHistory;
-  const sessionStatus = input.status ?? (input.evaluationResult ? "completed" : "in_progress");
+  const stateHistory = (() => {
+    const parsed = [...validatedArtifacts.data.stateHistory];
+    if (parsed.length === 0) return parsed;
+    const finalIndex = parsed.length - 1;
+    const finalState = parsed[finalIndex];
+    const terminalValidation = evaluateConversationTerminalState(finalState);
+    parsed[finalIndex] = {
+      ...finalState,
+      continue_simulation: !terminalValidation.isTerminal,
+      terminal_validation_reason: terminalValidation.terminalReason,
+      completion_blockers: terminalValidation.blockedBy,
+    };
+    return parsed;
+  })();
+  const finalState = stateHistory[stateHistory.length - 1];
+  const terminalValidation = evaluateConversationTerminalState(finalState);
+  const finalOutcome = getConversationOutcomeState(finalState);
+  const sessionStatus = (() => {
+    if (finalOutcome === "ABANDONED" || finalOutcome === "TIMED_OUT") return "abandoned";
+    if (input.status === "invalid" || input.status === "reprocess") return input.status;
+    if (terminalValidation.isTerminal) return "completed";
+    return "in_progress";
+  })();
   const derivedOverallScore = typeof input.overallScore === "number"
     ? (sessionStatus === "completed" ? input.overallScore : undefined)
     : typeof evaluation?.overall_score === "number"
@@ -139,6 +161,10 @@ export function buildSessionValues(userId: number, input: SaveSimulationSessionI
   if (sessionStatus === "reprocess" || sessionStatus === "invalid") {
     sessionValues.isFlagged = true;
     sessionValues.flagReason = input.flagReason ?? "AI pipeline requested reprocessing";
+  }
+  if (sessionStatus === "abandoned") {
+    sessionValues.isFlagged = true;
+    sessionValues.flagReason = input.flagReason ?? finalState?.outcome_summary ?? "Conversation ended without a valid resolution or escalation.";
   }
   if (sessionStatus === "completed" && input.evaluationResult) sessionValues.completedAt = new Date();
 
@@ -221,9 +247,10 @@ export async function saveSimulationSession(userId: number, input: SaveSimulatio
     .returning({ id: simulationSessions.id });
   const sessionId = result[0]?.id ?? null;
 
-  await updateAssignmentCompletionIfNeeded(input.assignmentId, input.status === "completed" && Boolean(input.evaluationResult));
+  await updateAssignmentCompletionIfNeeded(input.assignmentId, sessionValues.status === "completed" && Boolean(input.evaluationResult));
   await updateEmployeeProfileFromSession(userId, {
     ...input,
+    status: sessionValues.status as string | undefined,
     overallScore: (sessionValues.overallScore as number | undefined) ?? input.overallScore,
   });
 

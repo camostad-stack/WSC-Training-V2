@@ -1,3 +1,4 @@
+import { fetchWithTimeout, resolveSupabaseAccessToken } from "@/_core/auth-bootstrap";
 import { trpc } from "@/lib/trpc";
 import { UNAUTHED_ERR_MSG } from '@shared/const';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -42,13 +43,12 @@ const trpcClient = trpc.createClient({
       url: "/api/trpc",
       transformer: superjson,
       async fetch(input, init) {
-        const { data } = await supabase.auth.getSession();
-        const accessToken = data.session?.access_token;
+        const accessToken = await resolveSupabaseAccessToken(supabase);
         const headers = new Headers(init?.headers ?? {});
         if (accessToken) {
           headers.set("Authorization", `Bearer ${accessToken}`);
         }
-        return globalThis.fetch(input, {
+        return fetchWithTimeout(input, {
           ...(init ?? {}),
           headers,
         });

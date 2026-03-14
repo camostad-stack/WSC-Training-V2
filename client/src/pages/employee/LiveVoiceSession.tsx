@@ -10,7 +10,6 @@ import { useSimulator } from "@/contexts/SimulatorContext";
 import { useLiveVoiceSession } from "@/features/live-voice/useLiveVoiceSession";
 import { familyLabels } from "@/features/simulator/config";
 import { getLiveVoiceGuidance } from "@/features/live-voice/ux";
-import { getScenarioGoal } from "@shared/wsc-content";
 
 const stateLabels: Record<string, string> = {
   idle: "Ready",
@@ -79,6 +78,12 @@ export default function LiveVoiceSession() {
     if (!selfVideoRef.current) return;
     selfVideoRef.current.srcObject = liveSession.selfVideoStream;
   }, [liveSession.selfVideoStream]);
+
+  useEffect(() => {
+    if (finalizedRef.current) return;
+    if (!liveSession.terminalStateValidated) return;
+    void finishSession();
+  }, [liveSession.terminalStateValidated]);
 
   if (!scenario) return <Redirect to="/practice" />;
 
@@ -163,9 +168,8 @@ export default function LiveVoiceSession() {
     }
   };
 
-  const handleEndCall = async () => {
+  const handleEndCall = () => {
     liveSession.endCall();
-    await finishSession();
   };
 
   const switchToTextPractice = () => {
@@ -176,21 +180,26 @@ export default function LiveVoiceSession() {
     setLocation("/practice/session");
   };
 
-  const canToggleVideo = liveSession.connectionState !== "ended" && !isFinalizing;
+  const canToggleVideo = liveSession.sessionActive && !isFinalizing;
   const modeLabel = config.mode === "live-voice" ? "Live Voice Call" : "Voice Session";
-  const scenarioLabel = familyLabels[scenario.scenario_family || ""] || scenario.scenario_family || "Customer interaction";
-  const scenarioGoal = getScenarioGoal(scenario);
+  const callerLabel = scenario.customer_persona?.membership_context
+    || familyLabels[scenario.scenario_family || ""]
+    || scenario.scenario_family
+    || "Customer interaction";
   const isFallbackMode = liveSession.connectionState === "fallback";
   const isVoiceReady = liveSession.connectionState === "connected" || liveSession.connectionState === "connecting" || liveSession.connectionState === "reconnecting";
-  const employeeTurns = liveSession.transcript.filter((turn) => turn.role === "employee").length;
+  const latestState = liveSession.stateHistory[liveSession.stateHistory.length - 1] || null;
   const guidance = getLiveVoiceGuidance({
     connectionState: liveSession.connectionState,
     voiceMode: liveSession.voiceMode,
     assistantPhase: liveSession.assistantPhase,
     isMuted: liveSession.isMuted,
     transcriptTurns: liveSession.transcript.length,
-    employeeTurns,
-    recommendedTurns: scenario.recommended_turns || 4,
+    latestState,
+    sessionActive: liveSession.sessionActive,
+    terminalStateValidated: liveSession.terminalStateValidated,
+    complaintStillOpen: liveSession.complaintStillOpen,
+    liveRuntimeFailureState: liveSession.liveRuntimeFailureState,
     lastError: liveSession.lastError,
   });
 
@@ -217,9 +226,9 @@ export default function LiveVoiceSession() {
             <ChevronLeft className="h-5 w-5" />
           </button>
           <div className="text-center flex-1 min-w-0">
-            <div className="text-[10px] font-mono tracking-wider uppercase text-teal">Live Voice</div>
+            <div className="text-[10px] font-mono tracking-wider uppercase text-teal">Call Live</div>
             <div className="text-sm font-semibold truncate">{scenario.customer_persona?.name || "Customer"}</div>
-            <div className="text-xs text-muted-foreground truncate">{modeLabel} · {scenarioLabel}</div>
+            <div className="text-xs text-muted-foreground truncate">{modeLabel} · {callerLabel}</div>
           </div>
           <Badge variant="outline" className={`border-0 ${stateClasses[liveSession.connectionState] || stateClasses.idle}`}>
             {liveSession.connectionState === "connected" ? <Wifi className="h-3 w-3 mr-1" /> : <WifiOff className="h-3 w-3 mr-1" />}
@@ -235,14 +244,9 @@ export default function LiveVoiceSession() {
           </div>
           <div>
             <div className="text-lg font-semibold">{scenario.customer_persona?.name}</div>
-            <div className="text-sm text-muted-foreground">{scenario.customer_persona?.communication_style} · {scenario.customer_persona?.initial_emotion}</div>
+            <div className="text-sm text-muted-foreground">{callerLabel}</div>
           </div>
           <div className="text-xs text-muted-foreground">{scenario.situation_summary}</div>
-          <div className="rounded-lg border border-border bg-background/60 px-3 py-3 text-left">
-            <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Conversation Goal</div>
-            <div className="text-sm font-medium mt-1">{scenarioGoal.title}</div>
-            <div className="text-xs text-muted-foreground mt-1">{scenarioGoal.description}</div>
-          </div>
           <div className="text-3xl font-mono font-bold tracking-tight">{liveSession.formattedDuration}</div>
           {!isVoiceReady && (
             <div className="text-sm text-muted-foreground">
@@ -254,13 +258,13 @@ export default function LiveVoiceSession() {
           {isFallbackMode && (
             <div className="space-y-3 pt-2">
               <div className="text-sm text-amber-400">
-                Live voice is not available in this local setup. Continue this exact scenario in text practice.
+                Live voice is not available in this local setup. Switch this same caller into a typed conversation.
               </div>
               <Button
                 onClick={switchToTextPractice}
                 className="w-full bg-teal text-slate-deep hover:bg-teal/90"
               >
-                Continue in Text Practice
+                Switch to Typed Conversation
               </Button>
             </div>
           )}
@@ -272,25 +276,23 @@ export default function LiveVoiceSession() {
         </div>
 
         <div className={`panel p-4 space-y-2 border ${guidanceToneClasses[guidance.tone]}`}>
-          <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground">What To Do Now</div>
+          <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground">Call Status</div>
           <div className="text-sm font-semibold">{guidance.title}</div>
           <div className="text-sm text-muted-foreground">{guidance.detail}</div>
-          <div className="text-xs text-muted-foreground">
-            Target: {Math.max(3, scenario.recommended_turns || 4)} employee turns. Current: {employeeTurns}
-          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div className="panel p-4">
-            <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground mb-2">Call State</div>
+            <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground mb-2">Connection</div>
             <div className="text-sm font-medium">{stateLabels[liveSession.connectionState]}</div>
-            <div className="text-xs text-muted-foreground mt-1 capitalize">{liveSession.voiceMode.replace("_", " ")} · {liveSession.assistantPhase.replace(/_/g, " ")}</div>
-            <div className="text-xs text-muted-foreground mt-1">{liveSession.turnEvents.length} events · {liveSession.transcript.length} transcript turns</div>
+            <div className="text-xs text-muted-foreground mt-1 capitalize">{liveSession.voiceMode.replace("_", " ")}</div>
           </div>
           <div className="panel p-4">
-            <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground mb-2">Scenario</div>
-            <div className="text-sm font-medium truncate">{scenarioLabel}</div>
-            <div className="text-xs text-muted-foreground mt-1">Difficulty {scenario.difficulty}</div>
+            <div className="text-[10px] font-mono tracking-wider uppercase text-muted-foreground mb-2">Microphone</div>
+            <div className="text-sm font-medium">{liveSession.isMuted ? "Paused" : "Live"}</div>
+            <div className="text-xs text-muted-foreground mt-1">
+              {liveSession.isMuted ? "Resume when you are ready to answer." : "Your mic is ready for the next reply."}
+            </div>
           </div>
         </div>
 
@@ -370,7 +372,7 @@ export default function LiveVoiceSession() {
               className="flex-1 h-14 rounded-xl bg-teal text-slate-deep hover:bg-teal/90"
               onClick={switchToTextPractice}
             >
-              Continue in Text Practice
+              Switch to Typed Conversation
             </Button>
             <Button
               type="button"
@@ -378,7 +380,7 @@ export default function LiveVoiceSession() {
               className="flex-1 h-14 rounded-xl"
               onClick={() => setLocation("/practice/intro")}
             >
-              Back to Briefing
+              Back to Call Brief
             </Button>
           </div>
         ) : (

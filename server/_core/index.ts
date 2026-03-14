@@ -4,6 +4,14 @@ import net from "net";
 import { createApp } from "./app";
 import { serveStatic, setupVite } from "./vite";
 
+process.on("unhandledRejection", (error) => {
+  console.error("[Unhandled Rejection]", error);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("[Uncaught Exception]", error);
+});
+
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
     const server = net.createServer();

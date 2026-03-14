@@ -1,9 +1,6 @@
 /*
- * Command Center Design: Simulate Page — Enhanced 10-Prompt Architecture
- * - Split-pane: left conversation, right scenario intel panel with live state
- * - Chat bubbles with emotion + trust indicators
- * - Real AI customer simulation with state tracking via tRPC
- * - Status bar showing turn count, emotion, trust level, risk level
+ * Legacy simulator surface kept for compatibility.
+ * Runtime guidance should stay outcome-driven, not turn-count driven.
  */
 
 import NavHeader from "@/components/NavHeader";
@@ -14,6 +11,8 @@ import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useRef, useEffect } from "react";
 import { toast } from "sonner";
+import { evaluateConversationTerminalState, isTerminalConversationState } from "@shared/conversation-outcome";
+import { deriveConversationRuntimeView } from "@/features/simulator/runtime";
 import {
   MessageSquare,
   Send,
@@ -74,6 +73,11 @@ interface ConversationState {
   escalation_required: boolean;
   scenario_risk_level: string;
   continue_simulation: boolean;
+  goal_status?: "ACTIVE" | "PARTIALLY_RESOLVED" | "RESOLVED" | "ESCALATED" | "ABANDONED" | "TIMED_OUT";
+  accepted_next_step?: boolean;
+  valid_redirect?: boolean;
+  unmet_completion_criteria?: string[];
+  outcome_summary?: string;
 }
 
 export default function Simulate() {
@@ -92,7 +96,6 @@ export default function Simulate() {
   const [turnCount, setTurnCount] = useState(0);
   const [isTyping, setIsTyping] = useState(false);
   const [showHiddenFacts, setShowHiddenFacts] = useState(false);
-  const [scenarioComplete, setScenarioComplete] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -102,6 +105,7 @@ export default function Simulate() {
   const [stateHistory, setStateHistory] = useState<ConversationState[]>([]);
   const [revealedFacts, setRevealedFacts] = useState<string[]>([]);
   const [managerNeeded, setManagerNeeded] = useState(false);
+  const runtimeView = deriveConversationRuntimeView(convState as any);
 
   const customerReplyMutation = trpc.simulator.customerReply.useMutation();
   const evaluateMutation = trpc.simulator.evaluate.useMutation();
@@ -131,7 +135,7 @@ export default function Simulate() {
   }, [conversation, isTyping]);
 
   const handleSend = async () => {
-    if (!input.trim() || isTyping || scenarioComplete || !scenario) return;
+    if (!input.trim() || isTyping || runtimeView.terminal_state_validated || !scenario) return;
 
     const employeeMessage = input.trim();
     setInput("");
@@ -164,7 +168,9 @@ export default function Simulate() {
         employeeResponse: employeeMessage,
       });
 
-      const { customerReply, stateUpdate } = result;
+      const { customerReply, stateUpdate, terminalValidation } = result as typeof result & {
+        terminalValidation?: { isTerminal?: boolean };
+      };
 
       // Update emotion and state
       setCurrentEmotion(customerReply.updated_emotion);
@@ -191,12 +197,10 @@ export default function Simulate() {
       setIsTyping(false);
 
       // Check if scenario should end
-      if (
-        customerReply.scenario_complete ||
-        !stateUpdate.continue_simulation ||
-        newTurnCount >= (scenario.recommended_turns || 4)
-      ) {
-        setScenarioComplete(true);
+      const terminalValidated = typeof terminalValidation?.isTerminal === "boolean"
+        ? terminalValidation.isTerminal
+        : evaluateConversationTerminalState(stateUpdate as any).isTerminal;
+      if (terminalValidated) {
         setIsSimulating(false);
         toast.info("Scenario complete. View your evaluation results.");
       }
@@ -311,10 +315,14 @@ export default function Simulate() {
                 </span>
               </div>
               <div className="h-4 w-px bg-border" />
-              <span className="font-mono text-xs text-muted-foreground">
-                Turn <span className="text-teal font-bold">{turnCount}</span>/{scenario.recommended_turns}
-              </span>
-              <div className="h-4 w-px bg-border" />
+              {turnCount > 0 && (
+                <>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    Replies exchanged <span className="text-teal font-bold">{turnCount}</span>
+                  </span>
+                  <div className="h-4 w-px bg-border" />
+                </>
+              )}
               <span className={`font-mono text-xs px-2 py-0.5 rounded border ${emotionColors[currentEmotion] || "bg-secondary text-muted-foreground border-border"}`}>
                 {currentEmotion}
               </span>
@@ -342,13 +350,13 @@ export default function Simulate() {
               )}
             </div>
             <div className="flex items-center gap-2">
-              {isSimulating && !scenarioComplete && (
+              {isSimulating && !runtimeView.terminal_state_validated && (
                 <span className="flex items-center gap-1.5 font-mono text-xs text-teal">
                   <span className="status-dot bg-teal" />
                   LIVE
                 </span>
               )}
-              {scenarioComplete && (
+              {runtimeView.terminal_state_validated && (
                 <Button
                   size="sm"
                   onClick={handleViewResults}
@@ -449,7 +457,7 @@ export default function Simulate() {
 
             {/* Input Area */}
             <div className="border-t border-border/50 pt-4">
-              {scenarioComplete ? (
+              {runtimeView.terminal_state_validated ? (
                 <div className="panel p-4 text-center">
                   <p className="text-sm text-muted-foreground mb-3">Scenario complete. Review your performance evaluation.</p>
                   <Button

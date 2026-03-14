@@ -49,17 +49,17 @@ export default function PracticeSetup() {
         <button onClick={() => setLocation("/")} className="text-muted-foreground hover:text-foreground">
           <ChevronLeft className="h-5 w-5" />
         </button>
-        <h1 className="text-lg font-semibold">Practice Setup</h1>
+        <h1 className="text-lg font-semibold">Call Setup</h1>
       </div>
 
       <div className="panel p-4 space-y-4">
         <div className="flex items-center justify-between">
           <div>
             <div className="text-[10px] font-mono text-teal tracking-wider uppercase mb-1">
-              {isAssignedDrill ? "Assigned Drill" : "Quick Start"}
+              {isAssignedDrill ? "Assigned Call" : "Quick Start"}
             </div>
             <div className="text-sm font-medium">
-              {config.assignmentTitle || familyLabels[family || config.scenarioFamily || ""] || "Random practice scenario"}
+              {config.assignmentTitle || familyLabels[family || config.scenarioFamily || ""] || "Random caller"}
             </div>
           </div>
           <Badge variant="outline" className="text-[10px] border-border">
@@ -68,7 +68,7 @@ export default function PracticeSetup() {
         </div>
         <div className="text-xs text-muted-foreground">
           {departmentLabels[department]} · Difficulty {clampDifficulty(difficulty, minDifficulty, maxDifficulty)}
-          {family ? ` · ${familyLabels[family] || family}` : " · Mixed scenario"}
+          {family ? ` · ${familyLabels[family] || family}` : " · Mixed calls"}
         </div>
         <Button
           onClick={handleGenerate}
@@ -79,12 +79,12 @@ export default function PracticeSetup() {
           {isStarting ? (
             <>
               <Loader2 className="h-5 w-5 animate-spin" />
-              Generating Scenario...
+              Preparing Caller...
             </>
           ) : (
             <>
               <Zap className="h-5 w-5" />
-              {isAssignedDrill ? "Start Assigned Practice" : "Start Practice"}
+              {isAssignedDrill ? "Open Assigned Call" : "Start Call"}
             </>
           )}
         </Button>
@@ -93,7 +93,7 @@ export default function PracticeSetup() {
           className="w-full flex items-center justify-center gap-2 text-sm text-muted-foreground hover:text-foreground"
         >
           <SlidersHorizontal className="h-4 w-4" />
-          {showAdvanced ? "Hide Practice Options" : "Adjust Practice Options"}
+          {showAdvanced ? "Hide Call Options" : "Adjust Call Options"}
         </button>
       </div>
 
@@ -166,6 +166,14 @@ export default function PracticeSetup() {
                 <Mic className="h-4 w-4" /> Live
               </button>
             </div>
+            {mode === "live-voice" && (
+              <div className="mt-3 rounded-lg border border-teal/20 bg-teal/5 px-3 py-3 text-sm text-foreground">
+                <div className="font-medium">Live voice mode</div>
+                <div className="mt-1 text-muted-foreground">
+                  You will answer out loud through your mic while the caller responds in real time.
+                </div>
+              </div>
+            )}
           </div>
 
           <div>
@@ -195,7 +203,7 @@ export default function PracticeSetup() {
 
           <div>
             <label className="text-xs font-mono text-muted-foreground tracking-wider uppercase mb-2 block">
-              Scenario Family <span className="text-muted-foreground/50">(optional)</span>
+              Caller Type <span className="text-muted-foreground/50">(optional)</span>
             </label>
             <div className="flex flex-wrap gap-2">
               <button

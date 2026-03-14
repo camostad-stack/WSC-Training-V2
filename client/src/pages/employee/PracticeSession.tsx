@@ -6,7 +6,13 @@ import { useLocation, Redirect } from "wouter";
 import { useState, useRef, useEffect } from "react";
 import { Loader2, Send, X, User, Headphones } from "lucide-react";
 import { toast } from "sonner";
-import { getScenarioGoal } from "@shared/wsc-content";
+import {
+  appendConversationRuntimeEvent,
+  buildExplicitFailureOutcomePatch,
+  buildRuntimeEvent,
+  isTerminalConversationState,
+} from "@shared/conversation-outcome";
+import { deriveConversationRuntimeView } from "@/features/simulator/runtime";
 
 export default function PracticeSession() {
   const [, setLocation] = useLocation();
@@ -20,7 +26,6 @@ export default function PracticeSession() {
   const [currentEmotion, setCurrentEmotion] = useState(
     () => stateHistory[stateHistory.length - 1]?.emotion_state || scenario?.customer_persona?.initial_emotion || "frustrated"
   );
-  const [isComplete, setIsComplete] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [evaluationStep, setEvaluationStep] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -49,8 +54,8 @@ export default function PracticeSession() {
   }, []);
 
   if (!scenario) return <Redirect to="/practice" />;
-  const targetTurns = Math.max(3, Math.min(5, scenario.recommended_turns || 4));
-  const scenarioGoal = getScenarioGoal(scenario);
+  const latestState = stateHistory[stateHistory.length - 1];
+  const runtimeView = deriveConversationRuntimeView(latestState);
 
   const handleSend = async () => {
     if (!input.trim() || isProcessing) return;
@@ -76,23 +81,18 @@ export default function PracticeSession() {
         scenarioJson: scenario,
         transcript: transcriptArr,
         employeeResponse: msg,
-        stateJson: {
-          turn_number: turnCount + 1,
-          emotion_state: currentEmotion,
-          trust_level: 5,
-          issue_clarity: 5,
-        },
+        stateJson: stateHistory[stateHistory.length - 1] || undefined,
       });
 
       const parsed = typeof result === "string" ? JSON.parse(result) : result;
       const reply = parsed?.customerReply || parsed?.customer_reply || {};
       const nextState = parsed?.stateUpdate || parsed?.state_update || null;
+      const terminalValidated = typeof parsed?.terminalValidation?.isTerminal === "boolean"
+        ? parsed.terminalValidation.isTerminal
+        : (nextState ? deriveConversationRuntimeView(nextState).terminal_state_validated : false);
       const customerReply = reply.customer_reply || parsed.customer_reply || "...";
       const emotion = reply.updated_emotion || parsed.updated_emotion || parsed.emotion || currentEmotion;
       const nextTurnCount = typeof nextState?.turn_number === "number" ? nextState.turn_number : turnCount + 1;
-      const requestedComplete = reply.scenario_complete || parsed.scenario_complete || nextState?.continue_simulation === false || false;
-      const complete = requestedComplete && nextTurnCount >= 3;
-
       addTurn({
         role: "customer",
         message: customerReply,
@@ -106,9 +106,10 @@ export default function PracticeSession() {
       setCurrentEmotion(emotion);
       setTurnCount(nextTurnCount);
 
-      if (complete || nextTurnCount >= targetTurns) {
-        setIsComplete(true);
+      if (terminalValidated) {
+        toast.info("Call reached a valid ending. Review it when you are ready.");
       }
+
     } catch (err) {
       toast.error("Failed to get customer response. Try again.");
     } finally {
@@ -118,7 +119,40 @@ export default function PracticeSession() {
   };
 
   const handleEndSession = () => {
-    setIsComplete(true);
+    const latestState = stateHistory[stateHistory.length - 1];
+    if (!isTerminalConversationState(latestState)) {
+      const basePatch = buildExplicitFailureOutcomePatch(
+        "Employee ended the conversation before a valid resolution or escalation was earned.",
+        latestState?.unmet_completion_criteria || scenario.completion_criteria || [],
+        "abandonment_detected",
+      );
+      const patchedState = {
+        ...(latestState || {
+          turn_number: Math.max(1, turnCount),
+          emotion_state: currentEmotion,
+        }),
+        ...basePatch,
+        turn_number: (latestState?.turn_number || turnCount || 0) + 1,
+        emotion_state: latestState?.emotion_state || currentEmotion,
+        emotional_state: latestState?.emotional_state || latestState?.emotion_state || currentEmotion,
+        analysis_summary: latestState?.analysis_summary || "Conversation was manually ended before a valid completion state.",
+        likely_next_behavior: "disengage",
+      } as any;
+      patchedState.runtime_events = appendConversationRuntimeEvent(
+        patchedState,
+        buildRuntimeEvent(
+          "abandonment_detected",
+          patchedState,
+          "client",
+          "Employee manually ended the conversation before the terminal validator approved completion.",
+          { atTurn: patchedState.turn_number },
+        ),
+      );
+      addStateSnapshot({
+        ...patchedState,
+      } as any);
+      toast.warning("Conversation ended before the issue was fully settled.");
+    }
   };
 
   const handleEvaluate = async () => {
@@ -243,16 +277,8 @@ export default function PracticeSession() {
           <X className="h-5 w-5" />
         </button>
         <div className="flex-1 min-w-0">
-          <div className="text-[10px] font-mono text-teal tracking-wider uppercase">Step 2 of 3</div>
+          <div className="text-[10px] font-mono text-teal tracking-wider uppercase">Text Conversation</div>
           <div className="text-sm font-medium truncate">{scenario.customer_persona?.name || "Customer"}</div>
-          <div className="flex items-center gap-2">
-            <span className={`text-[10px] font-mono ${emotionColors[currentEmotion] || "text-muted-foreground"}`}>
-              {currentEmotion.toUpperCase()}
-            </span>
-            <span className="text-[10px] text-muted-foreground">
-              Turn {turnCount}/{targetTurns}
-            </span>
-          </div>
         </div>
         <Badge variant="outline" className="text-[10px] border-border shrink-0">
           {config.mode === "phone" ? <Headphones className="h-3 w-3 mr-1" /> : <User className="h-3 w-3 mr-1" />}
@@ -261,16 +287,11 @@ export default function PracticeSession() {
       </div>
 
       <div className="px-4 pt-3 shrink-0">
-        <div className="h-1.5 rounded-full bg-secondary/60 overflow-hidden">
-          <div className="h-full bg-teal transition-all" style={{ width: `${Math.min(100, (turnCount / targetTurns) * 100)}%` }} />
-        </div>
         <div className="mt-2 text-[10px] font-mono text-muted-foreground tracking-wider uppercase">
-          {isEvaluating ? evaluationStep || "Evaluating" : isProcessing ? "Customer responding" : isComplete ? "Ready for evaluation" : "Live session"}
+          {isEvaluating ? evaluationStep || "Reviewing" : isProcessing ? "Customer responding" : runtimeView.terminal_state_validated ? "Conversation ended" : "Conversation live"}
         </div>
-        <div className="mt-2 rounded-lg border border-border bg-card/60 px-3 py-2">
-          <div className="text-[10px] font-mono text-muted-foreground tracking-wider uppercase">Conversation Goal</div>
-          <div className="text-sm font-medium">{scenarioGoal.title}</div>
-          <div className="text-xs text-muted-foreground mt-0.5">{scenarioGoal.description}</div>
+        <div className="mt-2 rounded-lg border border-border bg-card/60 px-3 py-2 text-sm text-muted-foreground">
+          Reply as if you were speaking directly to the caller.
         </div>
       </div>
 
@@ -286,11 +307,6 @@ export default function PracticeSession() {
               {turn.role === "customer" && (
                 <div className="text-[10px] font-mono text-muted-foreground mb-1">
                   {scenario.customer_persona?.name || "Customer"}
-                  {turn.emotion && (
-                    <span className={`ml-2 ${emotionColors[turn.emotion] || ""}`}>
-                      ({turn.emotion})
-                    </span>
-                  )}
                 </div>
               )}
               <p className="text-sm leading-relaxed">{turn.message}</p>
@@ -315,7 +331,7 @@ export default function PracticeSession() {
 
       {/* Input / Complete */}
       <div className="border-t border-border bg-card/80 backdrop-blur p-3 shrink-0 safe-area-bottom">
-        {isComplete ? (
+        {runtimeView.terminal_state_validated ? (
           <div className="space-y-2">
             {isEvaluating ? (
               <div className="flex flex-col items-center gap-2 py-2">
@@ -323,7 +339,7 @@ export default function PracticeSession() {
                 <p className="text-xs text-muted-foreground">{evaluationStep}</p>
               </div>
             ) : (
-              <p className="text-xs text-center text-muted-foreground">Session complete — ready for evaluation</p>
+              <p className="text-xs text-center text-muted-foreground">Conversation ended — ready for review</p>
             )}
             <Button
               onClick={handleEvaluate}
@@ -333,10 +349,10 @@ export default function PracticeSession() {
               {isEvaluating ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  {evaluationStep || "Evaluating..."}
+                  {evaluationStep || "Reviewing..."}
                 </>
               ) : (
-                "Get Evaluation & Score"
+                "Review Call"
               )}
             </Button>
           </div>
@@ -352,7 +368,7 @@ export default function PracticeSession() {
                   handleSend();
                 }
               }}
-              placeholder="Type your response..."
+              placeholder="Type what you would say..."
               rows={1}
               className="flex-1 bg-secondary/50 border border-border rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-teal placeholder:text-muted-foreground"
               style={{ minHeight: "48px", maxHeight: "120px" }}

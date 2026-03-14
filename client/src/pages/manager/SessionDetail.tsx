@@ -13,6 +13,7 @@ import { useLocation, useParams } from "wouter";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { departmentLabels, familyLabels } from "@/features/simulator/config";
+import { buildPostCallDebrief } from "@/features/simulator/debrief";
 
 function parseJson<T>(value: unknown, fallback: T): T {
   try {
@@ -135,16 +136,24 @@ export default function SessionDetail() {
   const turnEvents = parseJson<any[]>(s.turnEvents, []);
   const timingMarkers = parseJson<any[]>(s.timingMarkers, []);
   const stateHistory = parseJson<any[]>(s.stateHistory, []);
+  const finalState = stateHistory[stateHistory.length - 1] || {};
   const evaluation = parseJson<any>(s.evaluationResult, {});
   const coaching = parseJson<any>(s.coachingResult, {});
   const policyGrounding = parseJson<any>(s.policyGrounding, {});
   const managerDebrief = parseJson<any>(s.managerDebrief, {});
   const categoryScores = evaluation.category_scores || s.categoryScores || {};
+  const scoreDimensions = (evaluation.score_dimensions || null) as Record<string, number> | null;
   const mediaItems = media.data || [];
   const reviewHistory = reviews.data || [];
   const readinessStatus = profile.data?.readinessStatus || s.readinessSignal || "not_ready";
   const readinessTrend = profile.data?.trend || "flat";
   const availableDrills = (scenarios.data || []).filter((template: any) => template.isActive);
+  const debrief = useMemo(() => buildPostCallDebrief({
+    stateHistory,
+    evaluation,
+    coaching,
+    managerDebrief,
+  }), [stateHistory, evaluation, coaching, managerDebrief]);
   const overrideScore = reviewForm.overrideScore ? parseInt(reviewForm.overrideScore, 10) : undefined;
   const isOverride = overrideScore !== undefined && overrideScore !== (s.overallScore ?? undefined);
   const reviewTabDefault = s.reviewStatus === "pending" ? "review" : "evidence";
@@ -268,6 +277,82 @@ export default function SessionDetail() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="bg-card border-border">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-xs font-mono tracking-wider uppercase text-muted-foreground">
+            Post-Call Outcome Review
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className={`border-0 ${
+              debrief.isActuallyResolved || debrief.escalationWasValid
+                ? "text-green-400 bg-green-500/10"
+                : debrief.outcomeState === "PARTIALLY_RESOLVED"
+                  ? "text-amber-400 bg-amber-500/10"
+                  : "text-red-400 bg-red-500/10"
+            }`}>
+              {formatLabel(debrief.outcomeState)}
+            </Badge>
+            <Badge variant="outline" className="border-0 bg-secondary/50 text-muted-foreground">
+              Accepted next step: {debrief.hasValidNextStep ? "yes" : "no"}
+            </Badge>
+            <Badge variant="outline" className="border-0 bg-secondary/50 text-muted-foreground">
+              Valid escalation: {debrief.escalationWasValid ? "yes" : "no"}
+            </Badge>
+            {debrief.prematureClosureAttempted && (
+              <Badge variant="outline" className="border-0 bg-red-500/10 text-red-400">
+                Premature closure detected
+              </Badge>
+            )}
+          </div>
+          <div className="rounded-lg border border-border p-4 bg-background/40">
+            <div className="text-xs font-mono tracking-wider uppercase text-muted-foreground mb-2">
+              Why This Did Or Did Not Count As Complete
+            </div>
+            <p className="text-sm text-muted-foreground leading-relaxed">{debrief.whyThisDidOrDidNotCountAsComplete}</p>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+            <div className="space-y-1">
+              <div>Issue progress: <span className="font-mono">{formatLabel(finalState.issue_progress_state || finalState.goal_status)}</span></div>
+              <div>Confidence in employee: <span className="font-mono">{finalState.confidence_in_employee ?? "--"}/10</span></div>
+              <div>Trust level: <span className="font-mono">{finalState.trust_level ?? "--"}/10</span></div>
+            </div>
+            <div className="space-y-1">
+              <div>Next step owner: <span className="text-muted-foreground">{finalState.next_step_owner || "--"}</span></div>
+              <div>Next step timeline: <span className="text-muted-foreground">{finalState.next_step_timeline || "--"}</span></div>
+              <div>Willing to escalate: <span className="font-mono">{finalState.willingness_to_escalate ?? "--"}/10</span></div>
+            </div>
+            <div className="space-y-2">
+              <div className="text-muted-foreground">What the customer still needed</div>
+              {debrief.customerStillNeeded.length === 0 ? (
+                <div className="text-sm">Nothing material remained open.</div>
+              ) : (
+                <ul className="list-disc list-inside text-xs text-muted-foreground space-y-1">
+                  {debrief.customerStillNeeded.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="space-y-2">
+              <div className="text-muted-foreground">Outcome summary</div>
+              <div className="text-sm">{debrief.outcomeSummary || "No hidden outcome summary captured."}</div>
+              {debrief.unmetCompletionCriteria.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-muted-foreground">Unmet completion criteria</div>
+                  <ul className="list-disc list-inside text-xs text-muted-foreground space-y-1">
+                    {debrief.unmetCompletionCriteria.slice(0, 4).map((criterion) => (
+                      <li key={criterion}>{criterion}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <Tabs defaultValue={reviewTabDefault}>
         <TabsList className="bg-secondary/50 border border-border flex flex-wrap h-auto">
@@ -423,6 +508,143 @@ export default function SessionDetail() {
         </TabsContent>
 
         <TabsContent value="result" className="mt-4 space-y-4">
+          {scoreDimensions && (
+            <Card className="bg-card border-border">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">
+                  Outcome vs Interaction
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">{debrief.interactionVsOutcomeNote}</p>
+                <div className="grid gap-3 lg:grid-cols-3">
+                  {Object.entries(scoreDimensions).map(([key, value]) => (
+                    <div key={key} className="rounded-lg border border-border p-3">
+                      <div className="text-xs text-muted-foreground capitalize">{key.replace(/_/g, " ")}</div>
+                      <div className="mt-1 font-mono text-lg">{value}/100</div>
+                      <div className="mt-2">
+                        <Progress value={value} className="h-2" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {debrief.polishedButUnresolved && (
+                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-sm text-amber-300">
+                    This session sounded more polished than it was operationally complete.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className="bg-card border-border">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">Where Trust Moved</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {debrief.whereTrustMoved.map((item) => (
+                  <div key={item} className="text-sm text-muted-foreground">- {item}</div>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card className="bg-card border-border">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">What Changed The Customer’s Tone</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {(debrief.whatChangedCustomerTone.length > 0 ? debrief.whatChangedCustomerTone : debrief.emotionalProgression).map((item) => (
+                  <div key={item} className="text-sm text-muted-foreground">- {item}</div>
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+
+          {debrief.prematureClosureAttempts.length > 0 && (
+            <Card className="bg-card border-border">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">
+                  Premature Closure Attempts
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {debrief.prematureClosureAttempts.map((attempt) => (
+                  <div key={`${attempt.turn}-${attempt.trigger}`} className="rounded-lg border border-border p-3">
+                    <div className="text-xs font-mono tracking-wider uppercase text-muted-foreground">
+                      Turn {attempt.turn}
+                    </div>
+                    <div className="mt-1 text-sm">Trigger: <span className="text-muted-foreground">{attempt.trigger}</span></div>
+                    <div className="mt-2 text-sm text-muted-foreground">Customer reaction: {attempt.customerReaction}</div>
+                    <div className="mt-2 text-sm text-muted-foreground">Recovery: {attempt.recovery}</div>
+                    {attempt.unresolvedGaps.length > 0 && (
+                      <div className="mt-2">
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider font-mono mb-1">
+                          Still unresolved at that moment
+                        </div>
+                        <ul className="list-disc list-inside text-xs text-muted-foreground space-y-1">
+                          {attempt.unresolvedGaps.slice(0, 4).map((gap) => (
+                            <li key={gap}>{gap}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className="bg-card border-border">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">Missed Moments Tied To Turns</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {debrief.missedMoments.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No specific missed-turn callouts were generated.</p>
+                ) : (
+                  debrief.missedMoments.map((moment) => (
+                    <div key={`${moment.turn}-${moment.title}`} className="rounded-lg border border-border p-3">
+                      <div className="text-xs font-mono tracking-wider uppercase text-muted-foreground">
+                        Turn {moment.turn} · {moment.title}
+                      </div>
+                      <p className="mt-1 text-sm text-muted-foreground">{moment.detail}</p>
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="bg-card border-border">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">Replay Focus</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {debrief.bestRecoveryMoment && (
+                  <div>
+                    <div className="text-xs text-muted-foreground uppercase tracking-wider font-mono mb-1">Best recovery moment</div>
+                    <p className="text-sm text-muted-foreground">{debrief.bestRecoveryMoment}</p>
+                  </div>
+                )}
+                {debrief.unresolvedTooLong && (
+                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-sm text-amber-300">
+                    The conversation stayed unresolved too long before it moved toward a usable outcome.
+                  </div>
+                )}
+                {debrief.reliedOnVagueFollowUp && (
+                  <div className="text-sm text-muted-foreground">- The employee relied on vague follow-up language instead of naming the owner, action, and timeline.</div>
+                )}
+                {debrief.policyWithoutOwnership && (
+                  <div className="text-sm text-muted-foreground">- Policy was used without enough ownership or a usable next step.</div>
+                )}
+                {debrief.recommendedReplayFocus.map((item) => (
+                  <div key={item} className="text-sm text-muted-foreground">- {item}</div>
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+
           <Card className="bg-card border-border">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">

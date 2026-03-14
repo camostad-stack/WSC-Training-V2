@@ -1,5 +1,5 @@
 import type { ScenarioDirectorResult } from "../ai/contracts";
-import { listVoiceIdsForProvider, selectVoiceIdForProvider } from "./catalog";
+import { listVoicesForProvider, selectVoiceIdForProvider } from "./catalog";
 import type {
   CustomerVoiceCast,
   VoiceAgeFlavor,
@@ -193,6 +193,97 @@ function derivePersonaArchetype(scenario: ScenarioDirectorResult): VoicePersonaA
   return "steady_practical";
 }
 
+function normalizeVoiceHintLocale(locale?: string) {
+  return normalize(locale).replace(/_/g, "-");
+}
+
+function buildPreferredVoiceTraits(scenario: ScenarioDirectorResult, archetype: VoicePersonaArchetype) {
+  const style = normalize(scenario.customer_persona.communication_style);
+  const emotion = normalize(scenario.customer_persona.initial_emotion);
+  const traits = new Set<string>();
+
+  if (/warm|friendly|supportive/.test(style)) traits.add("warm");
+  if (/direct|blunt|organized/.test(style)) traits.add("direct");
+  if (/skeptical|guarded|reserved|analytical/.test(style)) traits.add("grounded");
+  if (/curious|friendly|casual/.test(style)) traits.add("conversational");
+  if (/detail|measured|careful/.test(style)) traits.add("measured");
+  if (/urgent|fast|time-sensitive|impatient/.test(style)) traits.add("quick");
+  if (/annoyed|angry|frustrated/.test(emotion)) traits.add("firm");
+  if (/confused|curious|uncertain/.test(emotion)) traits.add("bright");
+
+  switch (archetype) {
+    case "rushed_impatient":
+      traits.add("firm");
+      traits.add("direct");
+      break;
+    case "calm_skeptical":
+      traits.add("grounded");
+      traits.add("measured");
+      break;
+    case "polite_frustrated":
+      traits.add("warm");
+      traits.add("clear");
+      break;
+    case "warm_confused":
+      traits.add("warm");
+      traits.add("bright");
+      break;
+    case "suspicious_direct":
+      traits.add("grounded");
+      traits.add("direct");
+      break;
+    default:
+      break;
+  }
+
+  return traits;
+}
+
+function scoreVoiceFit(params: {
+  scenario: ScenarioDirectorResult;
+  archetype: VoicePersonaArchetype;
+  provider: VoiceRenderProvider;
+  voiceId: string;
+  baseAgeFlavor: VoiceAgeFlavor;
+}) {
+  const voice = listVoicesForProvider(params.provider).find((candidate) => candidate.voiceId === params.voiceId);
+  if (!voice) return 0;
+
+  const hint = params.scenario.customer_persona.voice_hint;
+  const preferredLocale = normalizeVoiceHintLocale(hint?.locale);
+  const preferredPresentation = hint?.presentation;
+  const preferredAgeFlavor = hint?.age_flavor || params.baseAgeFlavor;
+  const preferredTraits = buildPreferredVoiceTraits(params.scenario, params.archetype);
+  let score = 0;
+
+  if (preferredPresentation && voice.genderFlavor === preferredPresentation) {
+    score += 22;
+  } else if (preferredPresentation && voice.genderFlavor && voice.genderFlavor !== preferredPresentation) {
+    score -= 8;
+  }
+
+  if (preferredAgeFlavor && voice.ageFlavor === preferredAgeFlavor) {
+    score += 12;
+  }
+
+  if (preferredLocale) {
+    const voiceLocale = normalizeVoiceHintLocale(voice.locale);
+    if (voiceLocale === preferredLocale) {
+      score += 10;
+    } else if (voiceLocale.split("-")[0] === preferredLocale.split("-")[0]) {
+      score += 5;
+    }
+  }
+
+  for (const trait of voice.traits) {
+    if (preferredTraits.has(normalize(trait))) {
+      score += 4;
+    }
+  }
+
+  return score;
+}
+
 function adjustSettingsForPersona<T extends {
   pace: VoicePace;
   warmth: VoiceWarmth;
@@ -328,9 +419,11 @@ function buildAssignmentReasons(params: {
   recentVoiceUsage: number;
   recentProviderUsage: number;
   repeatCaller: boolean;
+  voiceHintApplied: boolean;
 }) {
   const reasons = [`persona=${params.archetype}`];
   if (params.repeatCaller) reasons.push("repeat-caller-preserved");
+  if (params.voiceHintApplied) reasons.push("explicit-voice-hint");
   if (params.recentVoiceUsage > 0) reasons.push(`voice-rotated-after-${params.recentVoiceUsage}-recent-uses`);
   if (params.recentProviderUsage > 0) reasons.push(`provider-balance-${params.recentProviderUsage}`);
   return reasons;
@@ -402,27 +495,36 @@ export function createVoiceCastingService(options?: {
   }
 
   function chooseVoiceId(params: {
+    scenario: ScenarioDirectorResult;
     provider: VoiceRenderProvider;
     sessionSeed: string;
     archetype: VoicePersonaArchetype;
+    baseAgeFlavor: VoiceAgeFlavor;
   }) {
-    const voices = listVoiceIdsForProvider(params.provider);
+    const voices = listVoicesForProvider(params.provider);
     const recent = recentHistory();
     const last = recent[recent.length - 1];
     let best = selectVoiceIdForProvider(params.provider, `${params.sessionSeed}:${params.archetype}`);
     let bestScore = Number.NEGATIVE_INFINITY;
 
-    for (const voiceId of voices) {
-      const recentUsage = countRecent(recent, (item) => item.provider === params.provider && item.voiceId === voiceId);
-      const immediateRepeatPenalty = last?.provider === params.provider && last.voiceId === voiceId ? 45 : 0;
+    for (const voice of voices) {
+      const recentUsage = countRecent(recent, (item) => item.provider === params.provider && item.voiceId === voice.voiceId);
+      const immediateRepeatPenalty = last?.provider === params.provider && last.voiceId === voice.voiceId ? 45 : 0;
       const score = scoreCandidate({
         seed: params.sessionSeed,
-        label: `voice:${params.provider}:${voiceId}:${params.archetype}`,
+        label: `voice:${params.provider}:${voice.voiceId}:${params.archetype}`,
         recencyPenalty: recentUsage * 22,
         immediateRepeatPenalty,
+        fitBonus: scoreVoiceFit({
+          scenario: params.scenario,
+          archetype: params.archetype,
+          provider: params.provider,
+          voiceId: voice.voiceId,
+          baseAgeFlavor: params.baseAgeFlavor,
+        }),
       });
       if (score > bestScore) {
-        best = voiceId;
+        best = voice.voiceId;
         bestScore = score;
       }
     }
@@ -448,9 +550,11 @@ export function createVoiceCastingService(options?: {
       });
       const providerCapabilities = params.getProviderCapabilities(provider);
       const voiceId = preserved?.voiceId || chooseVoiceId({
+        scenario: params.scenario,
         provider,
         sessionSeed: `${params.sessionSeed}:${params.scenario.scenario_id}`,
         archetype,
+        baseAgeFlavor: adjustedSettings.ageFlavor,
       });
       const patternPrefs = getPersonaPatternPreferences(archetype);
       const cadenceFingerprint = preserved?.cadenceFingerprint || choosePattern({
@@ -536,6 +640,11 @@ export function createVoiceCastingService(options?: {
             recentVoiceUsage: recentVoiceUsageFrequency,
             recentProviderUsage: recentProviderUsageFrequency,
             repeatCaller: Boolean(repeatCallerConfig.repeatCallerKey),
+            voiceHintApplied: Boolean(
+              params.scenario.customer_persona.voice_hint?.presentation
+              || params.scenario.customer_persona.voice_hint?.locale
+              || params.scenario.customer_persona.voice_hint?.age_flavor,
+            ),
           }),
           fallbackEvents: [...fallbackEvents],
         },

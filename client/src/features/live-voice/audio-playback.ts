@@ -121,7 +121,7 @@ export async function playCustomerAudioTurn(params: PlayCustomerAudioTurnParams)
         contentType: rendered.contentType,
         onAudioCreated: params.onAudioCreated,
       });
-      const providerUsed = rendered.provider || selectedProvider;
+      const providerUsed: VoiceRenderProvider = rendered.provider || selectedProvider;
 
       if (rendered.didFallback || providerUsed !== selectedProvider) {
         logs.push({

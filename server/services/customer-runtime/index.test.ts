@@ -91,6 +91,36 @@ describe("customer runtime live turn orchestration", () => {
     expect(result.realtimeResponseInstructions).toContain("What still feels unresolved");
   });
 
+  it("keeps the same voice cast across turns when the live session is already locked", () => {
+    const firstTurn = processConversationRuntimeTurn({
+      scenario: createScenario(),
+      transcript: [
+        { role: "customer", message: "I need to know why I was charged twice and what you're doing about it." },
+      ],
+      employeeResponse: "I am looking at the account now.",
+      sessionSeed: "locked-live-session",
+      preferredVoiceProvider: "cartesia",
+    });
+
+    const secondTurn = processConversationRuntimeTurn({
+      scenario: createScenario(),
+      transcript: [
+        { role: "customer", message: "I need to know why I was charged twice and what you're doing about it." },
+        { role: "employee", message: "I am looking at the account now." },
+        { role: "customer", message: firstTurn.customerReply.customer_reply },
+      ],
+      employeeResponse: "I still need another minute to verify it.",
+      priorState: firstTurn.stateUpdate,
+      sessionSeed: "locked-live-session",
+      preferredVoiceProvider: "openai-native-speech",
+      lockedVoiceCast: firstTurn.voiceCast,
+    });
+
+    expect(secondTurn.voiceCast.provider).toBe(firstTurn.voiceCast.provider);
+    expect(secondTurn.voiceCast.voiceId).toBe(firstTurn.voiceCast.voiceId);
+    expect(secondTurn.realtimeResponseInstructions).toContain(`voice=${firstTurn.voiceCast.voiceId}`);
+  });
+
   it("keeps the complaint open across a longer vague back-and-forth", () => {
     const scenario = createScenario();
     let state: any = undefined;

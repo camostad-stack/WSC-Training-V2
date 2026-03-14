@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ScenarioDirectorResult } from "../ai/contracts";
+import { listVoicesForProvider } from "./catalog";
 import { createVoiceCastingService } from "./service";
 import type { VoiceProviderCapabilities, VoiceRenderProvider } from "./types";
 
@@ -272,5 +273,44 @@ describe("voice casting service", () => {
     expect(warmConfused.personaArchetype).toBe("warm_confused");
     expect(warmConfused.adjustedSettings.warmth).toBe("warm");
     expect(warmConfused.adjustedSettings.hesitationTendency).toBe("noticeable");
+  });
+
+  it("uses an explicit voice hint to bias the cast toward the intended presentation", () => {
+    const service = createVoiceCastingService();
+    const hinted = service.assignSessionIdentity({
+      scenario: createScenario({
+        customer_persona: {
+          name: "Priya Sharma",
+          age_band: "35-45",
+          membership_context: "Family member balancing child pickup timing",
+          communication_style: "fast and time-sensitive",
+          initial_emotion: "stressed",
+          patience_level: "low",
+          voice_hint: {
+            presentation: "feminine",
+            age_flavor: "adult",
+          },
+        },
+      }),
+      sessionSeed: "voice-hint-priya",
+      preferredProvider: "cartesia",
+      availableProviders: ["cartesia"],
+      getProviderCapabilities: getCapabilities,
+      baseSettings: {
+        ageFlavor: "adult",
+        warmth: "neutral",
+        sharpness: "balanced",
+        energy: "medium",
+        pace: "steady",
+        interruptionTendency: "situational",
+        hesitationTendency: "light",
+        verbosityTendency: "balanced",
+        emotionalResponsiveness: "flexible",
+      },
+    });
+
+    const selectedVoice = listVoicesForProvider("cartesia").find((voice) => voice.voiceId === hinted.voiceId);
+    expect(selectedVoice?.genderFlavor).toBe("feminine");
+    expect(hinted.castingDiagnostics.assignmentReasons).toContain("explicit-voice-hint");
   });
 });

@@ -566,6 +566,7 @@ export const appRouter = router({
         scenarioJson: z.any(),
         stateJson: z.any().optional(),
         deliveryAnalysis: z.any().optional(),
+        voiceCast: z.any().optional(),
         transcript: z.array(z.object({
           role: z.enum(["customer", "employee"]),
           message: z.string(),
@@ -588,11 +589,19 @@ export const appRouter = router({
       .input(z.object({
         text: z.string().min(1),
         voiceCast: z.any(),
+        providerOrder: z.array(z.enum([
+          "openai-realtime-native",
+          "openai-native-speech",
+          "cartesia",
+          "elevenlabs",
+          "browser-native-speech",
+        ])).optional(),
       }))
       .mutation(async ({ input }) => {
         const rendered = await renderVoiceLineWithDiagnostics({
           text: input.text,
           cast: input.voiceCast,
+          providerOrder: input.providerOrder,
         });
         return {
           provider: rendered.synthesis.provider,

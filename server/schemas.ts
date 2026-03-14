@@ -24,6 +24,17 @@ export const scenarioDirectorSchema = {
             communication_style: { type: "string" },
             initial_emotion: { type: "string" },
             patience_level: { type: "string" },
+            voice_hint: {
+              type: "object",
+              properties: {
+                presentation: { type: "string", enum: ["feminine", "masculine", "neutral"] },
+                locale: { type: "string" },
+                age_flavor: { type: "string", enum: ["young_adult", "adult", "older_adult"] },
+                notes: { type: "string" },
+              },
+              required: [],
+              additionalProperties: false,
+            },
           },
           required: ["name", "age_band", "membership_context", "communication_style", "initial_emotion", "patience_level"],
           additionalProperties: false,

@@ -6,6 +6,12 @@ export interface CustomerPersona {
   communication_style: string;
   initial_emotion: string;
   patience_level?: string;
+  voice_hint?: {
+    presentation?: "feminine" | "masculine" | "neutral";
+    locale?: string;
+    age_flavor?: "young_adult" | "adult" | "older_adult";
+    notes?: string;
+  };
 }
 
 export interface BranchLogic {

@@ -95,7 +95,7 @@ export function createCustomerVoiceCast(params: {
   const style = persona.communication_style || "direct";
   const emotion = persona.initial_emotion || "concerned";
   const patience = persona.patience_level || "moderate";
-  const ageFlavor = inferAgeFlavor(persona.age_band);
+  const ageFlavor = persona.voice_hint?.age_flavor || inferAgeFlavor(persona.age_band);
   const warmth = inferWarmth(style, emotion);
   const sharpness = inferSharpness(style, emotion);
   const energy = inferEnergy(style, emotion);

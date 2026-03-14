@@ -15,6 +15,11 @@ type WscScenarioTemplateSeed = {
     communication_style: string;
     initial_emotion: string;
     patience_level: string;
+    voice_hint?: {
+      presentation?: "feminine" | "masculine" | "neutral";
+      age_flavor?: "young_adult" | "adult" | "older_adult";
+      locale?: string;
+    };
   };
   situationSummary: string;
   openingLine: string;
@@ -38,7 +43,7 @@ type WscScenarioTemplateSeed = {
   recommendedTurns?: number;
 };
 
-export const WSC_SCENARIO_TEMPLATE_SEEDS: WscScenarioTemplateSeed[] = [
+const BASE_WSC_SCENARIO_TEMPLATE_SEEDS: WscScenarioTemplateSeed[] = [
   {
     title: "Front Desk Billing Charge Review",
     department: "customer_service",
@@ -941,6 +946,48 @@ export const WSC_SCENARIO_TEMPLATE_SEEDS: WscScenarioTemplateSeed[] = [
     recommendedTurns: 4,
   },
 ] as const;
+
+const BUNDLED_PERSONA_VOICE_HINTS: Record<string, NonNullable<WscScenarioTemplateSeed["customerPersona"]["voice_hint"]>> = {
+  "Erin Calloway": { presentation: "feminine", age_flavor: "adult", locale: "en-US" },
+  "Chris Vance": { presentation: "masculine", age_flavor: "older_adult", locale: "en-US" },
+  "Priya Sharma": { presentation: "feminine", age_flavor: "adult", locale: "en-US" },
+  "Michelle Ortega": { presentation: "feminine", age_flavor: "adult", locale: "en-US" },
+  "Neil Patterson": { presentation: "masculine", age_flavor: "older_adult", locale: "en-US" },
+  "Derrick Huang": { presentation: "masculine", age_flavor: "adult", locale: "en-US" },
+  "Mark Thompson": { presentation: "masculine", age_flavor: "adult", locale: "en-US" },
+  "Angela Brooks": { presentation: "feminine", age_flavor: "adult", locale: "en-US" },
+  "Owen Daniels": { presentation: "masculine", age_flavor: "adult", locale: "en-US" },
+  "Lauren Reed": { presentation: "feminine", age_flavor: "adult", locale: "en-US" },
+  "Sam Whitfield": { presentation: "neutral", age_flavor: "adult", locale: "en-US" },
+  "Brenda Rodriguez": { presentation: "feminine", age_flavor: "older_adult", locale: "en-US" },
+  "Trevor Bell": { presentation: "masculine", age_flavor: "adult", locale: "en-US" },
+  "Jordan Keller": { presentation: "neutral", age_flavor: "adult", locale: "en-US" },
+  "Tom Harrington": { presentation: "masculine", age_flavor: "older_adult", locale: "en-US" },
+  "Alicia Gomez": { presentation: "feminine", age_flavor: "adult", locale: "en-US" },
+};
+
+function inferBundledAgeFlavor(ageBand: string) {
+  const normalized = ageBand.toLowerCase();
+  if (/18|20|young/.test(normalized)) return "young_adult" as const;
+  if (/50|60|older|senior/.test(normalized)) return "older_adult" as const;
+  return "adult" as const;
+}
+
+export const WSC_SCENARIO_TEMPLATE_SEEDS: WscScenarioTemplateSeed[] = BASE_WSC_SCENARIO_TEMPLATE_SEEDS.map((seed) => {
+  const explicitHint = BUNDLED_PERSONA_VOICE_HINTS[seed.customerPersona.name];
+  return {
+    ...seed,
+    customerPersona: {
+      ...seed.customerPersona,
+      voice_hint: {
+        age_flavor: inferBundledAgeFlavor(seed.customerPersona.age_band),
+        locale: "en-US",
+        ...(explicitHint || {}),
+        ...(seed.customerPersona.voice_hint || {}),
+      },
+    },
+  };
+});
 
 export const WSC_POLICY_DOCUMENT_SEEDS = [
   {

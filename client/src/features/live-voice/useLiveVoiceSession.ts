@@ -569,6 +569,7 @@ export function useLiveVoiceSession(params: {
         renderExternalSpeech: ({ text, voiceCast: cast }) => renderSpeech.mutateAsync({
           text,
           voiceCast: cast,
+          providerOrder: [cast.provider],
         }),
         chooseNativeVoice: (cast) => {
           if (!browserSpeechVoiceRef.current) {
@@ -721,6 +722,7 @@ export function useLiveVoiceSession(params: {
       stateJson: priorState || undefined,
       sessionSeed: liveSessionIdRef.current,
       preferredVoiceProvider: getActiveVoiceCast().provider,
+      voiceCast: getActiveVoiceCast(),
     });
 
     const parsed = typeof result === "string" ? JSON.parse(result) : result;
@@ -730,22 +732,26 @@ export function useLiveVoiceSession(params: {
     const emotion = reply.updated_emotion || parsed.updated_emotion || nextState?.emotion_state || params.scenario.customer_persona?.initial_emotion;
     const terminalOutcome = parsed?.terminalValidation || evaluateConversationTerminalState(nextState);
     if (parsed?.voiceCast && sessionBlueprintRef.current) {
-      const previousProvider = sessionBlueprintRef.current.voiceCast?.provider;
-      sessionBlueprintRef.current = {
-        ...sessionBlueprintRef.current,
-        voiceCast: parsed.voiceCast,
-      };
-      browserSpeechVoiceRef.current = chooseBrowserSpeechVoice(parsed.voiceCast);
-      if (previousProvider !== parsed.voiceCast.provider) {
+      const lockedVoiceCast = sessionBlueprintRef.current.voiceCast;
+      if (!lockedVoiceCast) {
+        sessionBlueprintRef.current = {
+          ...sessionBlueprintRef.current,
+          voiceCast: parsed.voiceCast,
+        };
+        browserSpeechVoiceRef.current = chooseBrowserSpeechVoice(parsed.voiceCast);
+      } else if (
+        lockedVoiceCast.provider !== parsed.voiceCast.provider
+        || lockedVoiceCast.voiceId !== parsed.voiceCast.voiceId
+      ) {
         appendTurnEvent({
-          type: "audio_provider_selected",
+          type: "audio_provider_change_ignored",
           source: "system",
           atMs: nowMs(startedAtRef.current),
           payload: {
-            scope: "runtime_update",
-            provider: parsed.voiceCast.provider,
-            voiceId: parsed.voiceCast.voiceId,
-            fallbackProviders: parsed.voiceCast.fallbackProviders,
+            lockedProvider: lockedVoiceCast.provider,
+            lockedVoiceId: lockedVoiceCast.voiceId,
+            attemptedProvider: parsed.voiceCast.provider,
+            attemptedVoiceId: parsed.voiceCast.voiceId,
           },
         });
       }

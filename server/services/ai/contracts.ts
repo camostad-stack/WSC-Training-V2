@@ -74,6 +74,13 @@ const scenarioCompletionRulesSchema = z.object({
   manager_required_if: value.manager_required_if ?? [],
 }));
 
+const customerVoiceHintSchema = z.object({
+  presentation: z.enum(["feminine", "masculine", "neutral"]).optional(),
+  locale: z.string().trim().min(2).optional(),
+  age_flavor: z.enum(["young_adult", "adult", "older_adult"]).optional(),
+  notes: z.string().trim().min(1).max(160).optional(),
+}).partial();
+
 export const scenarioDirectorResultSchema = z.object({
   scenario_id: z.string().trim().min(1),
   department: z.string().trim().min(1),
@@ -87,6 +94,7 @@ export const scenarioDirectorResultSchema = z.object({
     communication_style: z.string().trim().min(1),
     initial_emotion: z.string().trim().min(1),
     patience_level: z.string().trim().min(1),
+    voice_hint: customerVoiceHintSchema.optional(),
   }),
   situation_summary: z.string().trim().min(1),
   opening_line: z.string().trim().min(1),

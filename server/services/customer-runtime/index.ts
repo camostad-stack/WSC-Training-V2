@@ -31,6 +31,7 @@ export async function processEmployeeTurn(params: {
   deliveryAnalysis?: unknown;
   sessionSeed?: string;
   preferredVoiceProvider?: VoiceRenderProvider;
+  voiceCast?: unknown;
 }) {
   const scenario = scenarioDirectorResultSchema.parse(params.scenarioJson);
   const transcript = transcriptSchema.parse(params.transcript);
@@ -45,6 +46,7 @@ export async function processEmployeeTurn(params: {
     deliveryAnalysis: params.deliveryAnalysis as VoiceDeliveryAnalysis | undefined,
     sessionSeed: params.sessionSeed,
     preferredVoiceProvider: params.preferredVoiceProvider,
+    lockedVoiceCast: coerceCustomerVoiceCast(params.voiceCast),
   });
   return {
     customerReply: customerReplyResultSchema.parse(result.customerReply),
@@ -54,6 +56,22 @@ export async function processEmployeeTurn(params: {
     realtimeResponseInstructions: result.realtimeResponseInstructions,
     openingResponseInstructions: result.openingResponseInstructions,
   };
+}
+
+function coerceCustomerVoiceCast(value: unknown): CustomerVoiceCast | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Partial<CustomerVoiceCast>;
+  if (
+    typeof candidate.provider !== "string"
+    || typeof candidate.voiceId !== "string"
+    || typeof candidate.sessionSeed !== "string"
+    || typeof candidate.stylePrompt !== "string"
+    || typeof candidate.emotionHint !== "string"
+    || !Array.isArray(candidate.fallbackProviders)
+  ) {
+    return undefined;
+  }
+  return candidate as CustomerVoiceCast;
 }
 
 function formatList(values: string[] | undefined, fallback: string) {
@@ -256,9 +274,10 @@ export function processConversationRuntimeTurn(params: {
   deliveryAnalysis?: VoiceDeliveryAnalysis;
   sessionSeed?: string;
   preferredVoiceProvider?: VoiceRenderProvider;
+  lockedVoiceCast?: CustomerVoiceCast;
 }): CustomerRuntimeTurnResult {
   const sessionSeed = params.sessionSeed || `${params.scenario.scenario_id}-default`;
-  const voiceCast = createCustomerVoiceCast({
+  const voiceCast = params.lockedVoiceCast || createCustomerVoiceCast({
     scenario: params.scenario,
     sessionSeed,
     preferredProvider: params.preferredVoiceProvider,

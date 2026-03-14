@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRealtimeResponseCreateEvent, extractRealtimeErrorMessage } from "./realtime-protocol";
+import {
+  buildRealtimeResponseCreateEvent,
+  claimRealtimeResponseCompletion,
+  extractRealtimeErrorMessage,
+} from "./realtime-protocol";
 
 describe("realtime-protocol", () => {
   it("uses output_modalities for response.create events", () => {
@@ -24,5 +28,13 @@ describe("realtime-protocol", () => {
         type: "error",
       },
     })).toBe("Unknown parameter: response.modalities · invalid_request_error · error");
+  });
+
+  it("dedupes repeated completion events for the same realtime response", () => {
+    const processed = new Set<string>();
+
+    expect(claimRealtimeResponseCompletion(processed, "resp_1")).toBe(true);
+    expect(claimRealtimeResponseCompletion(processed, "resp_1")).toBe(false);
+    expect(claimRealtimeResponseCompletion(processed, "resp_2")).toBe(true);
   });
 });

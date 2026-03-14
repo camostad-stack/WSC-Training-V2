@@ -18,7 +18,11 @@ import {
 } from "@/features/live-voice/voice-renderer";
 import { playCustomerAudioTurn } from "@/features/live-voice/audio-playback";
 import { resolveRealtimeResponseCompletion } from "@/features/live-voice/realtime-control";
-import { buildRealtimeResponseCreateEvent, extractRealtimeErrorMessage } from "@/features/live-voice/realtime-protocol";
+import {
+  buildRealtimeResponseCreateEvent,
+  claimRealtimeResponseCompletion,
+  extractRealtimeErrorMessage,
+} from "@/features/live-voice/realtime-protocol";
 import {
   appendBlockedPrematureClosureToState,
   deriveConversationRuntimeView,
@@ -155,6 +159,7 @@ export function useLiveVoiceSession(params: {
   const discardTurnCaptureRef = useRef(false);
   const browserSpeechVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const sessionBlueprintRef = useRef<Awaited<ReturnType<typeof createCredentials.mutateAsync>> | null>(null);
+  const processedRealtimeResponseIdsRef = useRef<Set<string>>(new Set());
   const pendingRealtimeTerminalValidationRef = useRef<{
     isTerminal: boolean;
     terminalReason: string;
@@ -518,6 +523,7 @@ export function useLiveVoiceSession(params: {
     renderedCustomerAudioRef.current = null;
     customerTextBufferRef.current.clear();
     customerTranscriptBufferRef.current.clear();
+    processedRealtimeResponseIdsRef.current.clear();
     dataChannelRef.current?.close();
     dataChannelRef.current = null;
     peerRef.current?.close();
@@ -551,6 +557,9 @@ export function useLiveVoiceSession(params: {
   const speakCustomerMessage = useCallback(async (message: string) => {
     setAssistantPhase("customer_speaking");
     const voiceCast = getActiveVoiceCast();
+    stopRenderedCustomerAudio(renderedCustomerAudioRef.current);
+    renderedCustomerAudioRef.current = null;
+    window.speechSynthesis?.cancel?.();
     try {
       const playback = await playCustomerAudioTurn({
         message,
@@ -1032,6 +1041,11 @@ export function useLiveVoiceSession(params: {
     }
     if (type === "response.output_item.done" || type === "response.done") {
       const responseId = String(event.response_id ?? (event.response as Record<string, unknown> | undefined)?.id ?? Date.now());
+      if (!claimRealtimeResponseCompletion(processedRealtimeResponseIdsRef.current, responseId)) {
+        customerTextBufferRef.current.delete(responseId);
+        customerTranscriptBufferRef.current.delete(responseId);
+        return;
+      }
       const responseText = extractAssistantTranscript(event)
         ?? customerTextBufferRef.current.get(responseId)
         ?? customerTranscriptBufferRef.current.get(responseId)

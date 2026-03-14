@@ -11,6 +11,14 @@ export function buildRealtimeResponseCreateEvent(params: {
   };
 }
 
+export function claimRealtimeResponseCompletion(processedIds: Set<string>, responseId: string) {
+  if (processedIds.has(responseId)) {
+    return false;
+  }
+  processedIds.add(responseId);
+  return true;
+}
+
 function extractTextFromUnknown(value: unknown): string | null {
   if (!value) return null;
   if (typeof value === "string") return value.trim() || null;

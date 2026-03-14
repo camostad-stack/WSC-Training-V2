@@ -565,6 +565,7 @@ export function useLiveVoiceSession(params: {
         message,
         voiceCast,
         allowBrowserNativeFallback: sessionBlueprintRef.current?.allowBrowserNativeAudioFallback ?? false,
+        externalRenderRetryCount: 2,
         renderExternalSpeech: ({ text, voiceCast: cast }) => renderSpeech.mutateAsync({
           text,
           voiceCast: cast,
@@ -616,13 +617,12 @@ export function useLiveVoiceSession(params: {
           reason: message,
         },
       });
-      failLiveVoiceSession(
-        "Customer voice rendering failed before a provider-backed fallback could recover.",
-        message,
-      );
-      return false;
+      appendTimingMarker("customer_audio_degraded", message);
+      setLastError(`Customer audio dropped for one turn. Check the transcript and continue. ${message}`);
+      setAssistantPhase("listening");
+      return true;
     }
-  }, [appendAudioPlaybackLogs, appendTurnEvent, failLiveVoiceSession, getActiveVoiceCast, renderSpeech]);
+  }, [appendAudioPlaybackLogs, appendTimingMarker, appendTurnEvent, getActiveVoiceCast, renderSpeech]);
 
   const stopRecognition = useCallback(() => {
     shouldResumeRecognitionRef.current = false;

@@ -131,6 +131,41 @@ describe("playCustomerAudioTurn", () => {
     expect(speakNativeVoice).toHaveBeenCalledTimes(1);
   });
 
+  it("retries provider-backed rendering once before giving up on the turn", async () => {
+    const speakNativeVoice = vi.fn(async () => undefined);
+    const renderExternalSpeech = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("cartesia timeout"))
+      .mockResolvedValueOnce({
+        provider: "openai-native-speech",
+        voiceId: "alloy",
+        contentType: "audio/mpeg",
+        audioBase64: "ZmFrZQ==",
+        didFallback: true,
+        fallbackEvent: {
+          fromProvider: "cartesia",
+          toProvider: "openai-native-speech",
+          reason: "cartesia timeout",
+        },
+      });
+
+    const result = await playCustomerAudioTurn({
+      message: "Okay, then what happens next?",
+      voiceCast: createVoiceCast(),
+      allowBrowserNativeFallback: false,
+      renderExternalSpeech,
+      playRenderedAudio: async () => ({ started: true, completed: true }),
+      speakNativeVoice,
+      chooseNativeVoice: () => null,
+      externalRenderRetryCount: 2,
+    });
+
+    expect(renderExternalSpeech).toHaveBeenCalledTimes(2);
+    expect(result.providerUsed).toBe("openai-native-speech");
+    expect(result.playbackRoute).toBe("external-rendered");
+    expect(speakNativeVoice).not.toHaveBeenCalled();
+  });
+
   it("fails explicitly instead of silently downgrading to browser speech when browser fallback is disabled", async () => {
     const speakNativeVoice = vi.fn(async () => undefined);
 

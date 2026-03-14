@@ -41,6 +41,7 @@ export interface PlayCustomerAudioTurnParams {
   message: string;
   voiceCast: CustomerVoiceCast;
   allowBrowserNativeFallback?: boolean;
+  externalRenderRetryCount?: number;
   renderExternalSpeech: (params: {
     text: string;
     voiceCast: CustomerVoiceCast;
@@ -56,6 +57,7 @@ export async function playCustomerAudioTurn(params: PlayCustomerAudioTurnParams)
   const speakNativeVoice = params.speakNativeVoice ?? speakWithBrowserVoiceCast;
   const chooseNativeVoice = params.chooseNativeVoice ?? chooseBrowserSpeechVoice;
   const allowBrowserNativeFallback = params.allowBrowserNativeFallback ?? true;
+  const externalRenderRetryCount = Math.max(1, params.externalRenderRetryCount ?? 2);
   const selectedProvider = params.voiceCast.provider;
   const logs: AudioPlaybackLog[] = [
     {
@@ -106,46 +108,63 @@ export async function playCustomerAudioTurn(params: PlayCustomerAudioTurnParams)
     return await speakWithNativeFallback("browser_native_selected");
   }
 
-  try {
-    const rendered = await params.renderExternalSpeech({
-      text: params.message,
-      voiceCast: params.voiceCast,
-    });
-    const playback = await playRenderedAudio({
-      audioBase64: rendered.audioBase64,
-      contentType: rendered.contentType,
-      onAudioCreated: params.onAudioCreated,
-    });
-    const providerUsed = rendered.provider || selectedProvider;
+  let lastExternalFailure = "external_renderer_failed";
 
-    if (rendered.didFallback || providerUsed !== selectedProvider) {
+  for (let attempt = 1; attempt <= externalRenderRetryCount; attempt += 1) {
+    try {
+      const rendered = await params.renderExternalSpeech({
+        text: params.message,
+        voiceCast: params.voiceCast,
+      });
+      const playback = await playRenderedAudio({
+        audioBase64: rendered.audioBase64,
+        contentType: rendered.contentType,
+        onAudioCreated: params.onAudioCreated,
+      });
+      const providerUsed = rendered.provider || selectedProvider;
+
+      if (rendered.didFallback || providerUsed !== selectedProvider) {
+        logs.push({
+          type: "audio_provider_fallback",
+          payload: {
+            fromProvider: selectedProvider,
+            toProvider: providerUsed,
+            reason: rendered.fallbackEvent?.reason || "provider_switched_during_render",
+            fallbackEvent: rendered.fallbackEvent || null,
+          },
+        });
+      }
+
+      if (playback.completed) {
+        return {
+          providerSelected: selectedProvider,
+          providerUsed,
+          voiceId: rendered.voiceId,
+          playbackRoute: "external-rendered",
+          fallbackTriggered: Boolean(rendered.didFallback || providerUsed !== selectedProvider),
+          fallbackReason: rendered.fallbackEvent?.reason,
+          fallbackEvent: rendered.fallbackEvent,
+          diagnostics: rendered.diagnostics,
+          logs,
+        };
+      }
+
+      lastExternalFailure = playback.error || "external_audio_playback_failed";
+    } catch (error) {
+      lastExternalFailure = error instanceof Error ? error.message : "external_renderer_failed";
+    }
+
+    if (attempt < externalRenderRetryCount) {
       logs.push({
         type: "audio_provider_fallback",
         payload: {
           fromProvider: selectedProvider,
-          toProvider: providerUsed,
-          reason: rendered.fallbackEvent?.reason || "provider_switched_during_render",
-          fallbackEvent: rendered.fallbackEvent || null,
+          toProvider: selectedProvider,
+          reason: `retry_attempt_${attempt}:${lastExternalFailure}`,
         },
       });
     }
-
-    if (playback.completed) {
-      return {
-        providerSelected: selectedProvider,
-        providerUsed,
-        voiceId: rendered.voiceId,
-        playbackRoute: "external-rendered",
-        fallbackTriggered: Boolean(rendered.didFallback || providerUsed !== selectedProvider),
-        fallbackReason: rendered.fallbackEvent?.reason,
-        fallbackEvent: rendered.fallbackEvent,
-        diagnostics: rendered.diagnostics,
-        logs,
-      };
-    }
-
-    return await speakWithNativeFallback(playback.error || "external_audio_playback_failed");
-  } catch (error) {
-    return await speakWithNativeFallback(error instanceof Error ? error.message : "external_renderer_failed");
   }
+
+  return await speakWithNativeFallback(lastExternalFailure);
 }

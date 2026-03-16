@@ -17,7 +17,10 @@ import {
   stopRenderedCustomerAudio,
 } from "@/features/live-voice/voice-renderer";
 import { playCustomerAudioTurn } from "@/features/live-voice/audio-playback";
-import { resolveRealtimeResponseCompletion } from "@/features/live-voice/realtime-control";
+import {
+  mergeRealtimeTranscriptSegments,
+  resolveRealtimeResponseCompletion,
+} from "@/features/live-voice/realtime-control";
 import {
   buildRealtimeResponseCreateEvent,
   claimRealtimeTranscriptItem,
@@ -77,6 +80,7 @@ function nowMs(startedAt: number | null) {
 
 const LOCAL_VOICE_ANALYZER_URL = "http://localhost:3010";
 const LIVE_SESSION_INACTIVITY_TIMEOUT_MS = 45_000;
+const REALTIME_EMPLOYEE_TURN_GRACE_MS = 1_200;
 
 type TurnCaptureStatus = "idle" | "recording" | "uploading" | "error";
 
@@ -163,6 +167,9 @@ export function useLiveVoiceSession(params: {
   const sessionBlueprintRef = useRef<Awaited<ReturnType<typeof createCredentials.mutateAsync>> | null>(null);
   const processedRealtimeResponseIdsRef = useRef<Set<string>>(new Set());
   const processedRealtimeTranscriptItemIdsRef = useRef<Set<string>>(new Set());
+  const pendingRealtimeTranscriptSegmentsRef = useRef<string[]>([]);
+  const pendingRealtimeTranscriptTurnKeyRef = useRef<string | null>(null);
+  const realtimeTurnFinalizeTimerRef = useRef<number | null>(null);
   const pendingRealtimeTerminalValidationRef = useRef<{
     isTerminal: boolean;
     terminalReason: string;
@@ -245,6 +252,13 @@ export function useLiveVoiceSession(params: {
 
   const appendStateSnapshot = useCallback((snapshot: SimulationStateSnapshot) => {
     setStateHistory((prev) => [...prev, snapshot]);
+  }, []);
+
+  const clearRealtimeTurnFinalizeTimer = useCallback(() => {
+    if (realtimeTurnFinalizeTimerRef.current !== null) {
+      window.clearTimeout(realtimeTurnFinalizeTimerRef.current);
+      realtimeTurnFinalizeTimerRef.current = null;
+    }
   }, []);
 
   const replaceLatestStateSnapshot = useCallback((update: (latest: SimulationStateSnapshot) => SimulationStateSnapshot | null) => {
@@ -514,6 +528,7 @@ export function useLiveVoiceSession(params: {
   }, []);
 
   const cleanupConnection = useCallback(() => {
+    clearRealtimeTurnFinalizeTimer();
     shouldResumeRecognitionRef.current = false;
     recognitionRef.current?.abort();
     recognitionRef.current = null;
@@ -528,6 +543,8 @@ export function useLiveVoiceSession(params: {
     customerTranscriptBufferRef.current.clear();
     processedRealtimeResponseIdsRef.current.clear();
     processedRealtimeTranscriptItemIdsRef.current.clear();
+    pendingRealtimeTranscriptSegmentsRef.current = [];
+    pendingRealtimeTranscriptTurnKeyRef.current = null;
     dataChannelRef.current?.close();
     dataChannelRef.current = null;
     peerRef.current?.close();
@@ -538,7 +555,7 @@ export function useLiveVoiceSession(params: {
     startedAtRef.current = null;
     setAssistantPhase("ended");
     stopStreams();
-  }, [stopStreams]);
+  }, [clearRealtimeTurnFinalizeTimer, stopStreams]);
 
   const failLiveVoiceSession = useCallback((reason: string, detail?: string) => {
     cleanupConnection();
@@ -857,6 +874,93 @@ export function useLiveVoiceSession(params: {
     }
   }, [appendCloseTriggerLog, appendStateSnapshot, appendTimingMarker, appendTranscript, appendTurnEvent, cleanupConnection, connectionState, getActiveVoiceCast, isMuted, params.scenario, processLiveTurn, recordBlockedPrematureClosure, sendClientEvent, speakCustomerMessage, startRecognition]);
 
+  const flushPendingRealtimeEmployeeTurn = useCallback(async () => {
+    const transcriptText = mergeRealtimeTranscriptSegments(pendingRealtimeTranscriptSegmentsRef.current);
+    const transcriptTurnKey = pendingRealtimeTranscriptTurnKeyRef.current || `employee-${Date.now()}`;
+    pendingRealtimeTranscriptSegmentsRef.current = [];
+    pendingRealtimeTranscriptTurnKeyRef.current = null;
+    clearRealtimeTurnFinalizeTimer();
+
+    if (!transcriptText) {
+      return;
+    }
+
+    appendTranscript("employee", transcriptText, transcriptTurnKey);
+    if (processingRealtimeTurnRef.current) {
+      appendTurnEvent({
+        type: "realtime_turn_merge_skipped_while_processing",
+        source: "system",
+        atMs: nowMs(startedAtRef.current),
+        payload: {
+          transcriptText,
+        },
+      });
+      return;
+    }
+
+    processingRealtimeTurnRef.current = true;
+    try {
+      const audioBlob = await stopEmployeeTurnCapture(false);
+      const deliveryAnalysis = await analyzeEmployeeDelivery(audioBlob, transcriptText);
+      await processEmployeeTurnThroughRuntime(transcriptText, deliveryAnalysis, "realtime", true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Realtime turn processing failed.";
+      setLastError(message);
+      setAssistantPhase("error");
+      appendTimingMarker("realtime_turn_processing_error", message);
+    } finally {
+      processingRealtimeTurnRef.current = false;
+    }
+
+    if (looksLikeClosingLanguage(transcriptText)) {
+      const validation = evaluateConversationTerminalState(latestStateHistoryRef.current[latestStateHistoryRef.current.length - 1]);
+      appendCloseTriggerLog({
+        trigger: "transcript_finalized",
+        accepted: validation.isTerminal,
+        reason: validation.isTerminal
+          ? validation.terminalReason
+          : "Transcript finalization does not end the conversation without a validated terminal state.",
+        source: "employee",
+        blockedBy: validation.blockedBy,
+      });
+      if (!validation.isTerminal) {
+        recordBlockedPrematureClosure({
+          triggerSource: "transcript_finalized",
+          triggerPhraseOrReason: transcriptText,
+          source: "live_runtime",
+          summary: "A finalized employee transcript sounded like a wrap-up, but the complaint still remained open.",
+        });
+        appendTurnEvent({
+          type: "early_close_blocked",
+          source: "employee",
+          atMs: nowMs(startedAtRef.current),
+          payload: {
+            trigger: "transcript_finalized",
+            phrase: transcriptText,
+            blockedBy: validation.blockedBy,
+          },
+        });
+      }
+    }
+  }, [
+    analyzeEmployeeDelivery,
+    appendCloseTriggerLog,
+    appendTimingMarker,
+    appendTranscript,
+    appendTurnEvent,
+    clearRealtimeTurnFinalizeTimer,
+    processEmployeeTurnThroughRuntime,
+    recordBlockedPrematureClosure,
+    stopEmployeeTurnCapture,
+  ]);
+
+  const scheduleRealtimeEmployeeTurnFinalize = useCallback(() => {
+    clearRealtimeTurnFinalizeTimer();
+    realtimeTurnFinalizeTimerRef.current = window.setTimeout(() => {
+      void flushPendingRealtimeEmployeeTurn();
+    }, REALTIME_EMPLOYEE_TURN_GRACE_MS);
+  }, [clearRealtimeTurnFinalizeTimer, flushPendingRealtimeEmployeeTurn]);
+
   const enableLocalVoiceMode = useCallback(async (reason?: string) => {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Recognition) {
@@ -957,6 +1061,7 @@ export function useLiveVoiceSession(params: {
     const type = String(event.type ?? "");
 
     if (type === "input_audio_buffer.speech_started") {
+      clearRealtimeTurnFinalizeTimer();
       appendTimingMarker("employee_speech_started");
       stopRenderedCustomerAudio(renderedCustomerAudioRef.current);
       renderedCustomerAudioRef.current = null;
@@ -966,6 +1071,9 @@ export function useLiveVoiceSession(params: {
     }
     if (type === "input_audio_buffer.speech_stopped") {
       appendTimingMarker("employee_speech_stopped");
+      if (pendingRealtimeTranscriptSegmentsRef.current.length > 0) {
+        scheduleRealtimeEmployeeTurnFinalize();
+      }
       return;
     }
     if (type === "conversation.item.input_audio_transcription.completed") {
@@ -987,54 +1095,13 @@ export function useLiveVoiceSession(params: {
       }
       const transcriptText = extractTextFromUnknown(event.transcript ?? event.item);
       if (transcriptText) {
-        appendTranscript("employee", transcriptText, `employee-${transcriptItemId || Date.now()}`);
-        if (!processingRealtimeTurnRef.current) {
-          processingRealtimeTurnRef.current = true;
-          void (async () => {
-            try {
-              const audioBlob = await stopEmployeeTurnCapture(false);
-              const deliveryAnalysis = await analyzeEmployeeDelivery(audioBlob, transcriptText);
-              await processEmployeeTurnThroughRuntime(transcriptText, deliveryAnalysis, "realtime", true);
-            } catch (error) {
-              const message = error instanceof Error ? error.message : "Realtime turn processing failed.";
-              setLastError(message);
-              setAssistantPhase("error");
-              appendTimingMarker("realtime_turn_processing_error", message);
-            } finally {
-              processingRealtimeTurnRef.current = false;
-            }
-          })();
-        }
-        if (looksLikeClosingLanguage(transcriptText)) {
-          const validation = evaluateConversationTerminalState(latestStateHistoryRef.current[latestStateHistoryRef.current.length - 1]);
-          appendCloseTriggerLog({
-            trigger: "transcript_finalized",
-            accepted: validation.isTerminal,
-            reason: validation.isTerminal
-              ? validation.terminalReason
-              : "Transcript finalization does not end the conversation without a validated terminal state.",
-            source: "employee",
-            blockedBy: validation.blockedBy,
-          });
-          if (!validation.isTerminal) {
-            recordBlockedPrematureClosure({
-              triggerSource: "transcript_finalized",
-              triggerPhraseOrReason: transcriptText,
-              source: "live_runtime",
-              summary: "A finalized employee transcript sounded like a wrap-up, but the complaint still remained open.",
-            });
-            appendTurnEvent({
-              type: "early_close_blocked",
-              source: "employee",
-              atMs: nowMs(startedAtRef.current),
-              payload: {
-                trigger: "transcript_finalized",
-                phrase: transcriptText,
-                blockedBy: validation.blockedBy,
-              },
-            });
-          }
-        }
+        pendingRealtimeTranscriptSegmentsRef.current = [
+          ...pendingRealtimeTranscriptSegmentsRef.current,
+          transcriptText,
+        ];
+        pendingRealtimeTranscriptTurnKeyRef.current = pendingRealtimeTranscriptTurnKeyRef.current || `employee-${transcriptItemId || Date.now()}`;
+        setDraftTranscript(mergeRealtimeTranscriptSegments(pendingRealtimeTranscriptSegmentsRef.current));
+        scheduleRealtimeEmployeeTurnFinalize();
       }
       return;
     }
@@ -1177,7 +1244,7 @@ export function useLiveVoiceSession(params: {
       setAssistantPhase("error");
       appendTimingMarker("realtime_error", message);
     }
-  }, [analyzeEmployeeDelivery, appendCloseTriggerLog, appendTimingMarker, appendTranscript, appendTurnEvent, cleanupConnection, processEmployeeTurnThroughRuntime, recordBlockedPrematureClosure, speakCustomerMessage, startEmployeeTurnCapture, stopEmployeeTurnCapture]);
+  }, [appendCloseTriggerLog, appendTimingMarker, appendTranscript, appendTurnEvent, cleanupConnection, clearRealtimeTurnFinalizeTimer, recordBlockedPrematureClosure, scheduleRealtimeEmployeeTurnFinalize, speakCustomerMessage, startEmployeeTurnCapture]);
 
   const startSelfVideo = useCallback(async () => {
     if (selfVideoStreamRef.current) {

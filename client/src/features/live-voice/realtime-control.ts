@@ -11,6 +11,15 @@ export type RealtimeResponseCompletionDecision = {
   blockedBy: string[];
 };
 
+export function mergeRealtimeTranscriptSegments(parts: string[]) {
+  return parts
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function resolveRealtimeResponseCompletion(
   pendingValidation: PendingBackendTerminalValidation,
 ): RealtimeResponseCompletionDecision {

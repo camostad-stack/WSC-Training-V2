@@ -20,8 +20,10 @@ import { playCustomerAudioTurn } from "@/features/live-voice/audio-playback";
 import { resolveRealtimeResponseCompletion } from "@/features/live-voice/realtime-control";
 import {
   buildRealtimeResponseCreateEvent,
+  claimRealtimeTranscriptItem,
   claimRealtimeResponseCompletion,
   extractRealtimeErrorMessage,
+  isRealtimeResponseCompletionEvent,
 } from "@/features/live-voice/realtime-protocol";
 import {
   appendBlockedPrematureClosureToState,
@@ -160,6 +162,7 @@ export function useLiveVoiceSession(params: {
   const browserSpeechVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const sessionBlueprintRef = useRef<Awaited<ReturnType<typeof createCredentials.mutateAsync>> | null>(null);
   const processedRealtimeResponseIdsRef = useRef<Set<string>>(new Set());
+  const processedRealtimeTranscriptItemIdsRef = useRef<Set<string>>(new Set());
   const pendingRealtimeTerminalValidationRef = useRef<{
     isTerminal: boolean;
     terminalReason: string;
@@ -524,6 +527,7 @@ export function useLiveVoiceSession(params: {
     customerTextBufferRef.current.clear();
     customerTranscriptBufferRef.current.clear();
     processedRealtimeResponseIdsRef.current.clear();
+    processedRealtimeTranscriptItemIdsRef.current.clear();
     dataChannelRef.current?.close();
     dataChannelRef.current = null;
     peerRef.current?.close();
@@ -965,9 +969,25 @@ export function useLiveVoiceSession(params: {
       return;
     }
     if (type === "conversation.item.input_audio_transcription.completed") {
+      const transcriptItemId = String(
+        event.item_id
+          ?? ((event.item as Record<string, unknown> | undefined)?.id)
+          ?? "",
+      ).trim();
+      if (!claimRealtimeTranscriptItem(processedRealtimeTranscriptItemIdsRef.current, transcriptItemId || undefined)) {
+        appendTurnEvent({
+          type: "duplicate_transcript_completion_ignored",
+          source: "system",
+          atMs: nowMs(startedAtRef.current),
+          payload: {
+            itemId: transcriptItemId || null,
+          },
+        });
+        return;
+      }
       const transcriptText = extractTextFromUnknown(event.transcript ?? event.item);
       if (transcriptText) {
-        appendTranscript("employee", transcriptText, `employee-${String(event.item_id ?? Date.now())}`);
+        appendTranscript("employee", transcriptText, `employee-${transcriptItemId || Date.now()}`);
         if (!processingRealtimeTurnRef.current) {
           processingRealtimeTurnRef.current = true;
           void (async () => {
@@ -1045,7 +1065,21 @@ export function useLiveVoiceSession(params: {
       customerTextBufferRef.current.set(id, doneText);
       return;
     }
-    if (type === "response.output_item.done" || type === "response.done") {
+    if (type === "response.output_item.done") {
+      const itemResponseId = String(
+        event.response_id
+          ?? ((event.response as Record<string, unknown> | undefined)?.id)
+          ?? event.item_id
+          ?? ((event.item as Record<string, unknown> | undefined)?.id)
+          ?? "",
+      ).trim();
+      const itemText = extractAssistantTranscript(event);
+      if (itemResponseId && itemText) {
+        customerTextBufferRef.current.set(itemResponseId, itemText);
+      }
+      return;
+    }
+    if (isRealtimeResponseCompletionEvent(type)) {
       const responseId = String(event.response_id ?? (event.response as Record<string, unknown> | undefined)?.id ?? Date.now());
       if (!claimRealtimeResponseCompletion(processedRealtimeResponseIdsRef.current, responseId)) {
         customerTextBufferRef.current.delete(responseId);
@@ -1233,6 +1267,8 @@ export function useLiveVoiceSession(params: {
     sessionBlueprintRef.current = null;
     pendingRealtimeTerminalValidationRef.current = null;
     processingRealtimeTurnRef.current = false;
+    processedRealtimeResponseIdsRef.current.clear();
+    processedRealtimeTranscriptItemIdsRef.current.clear();
     setDraftTranscript("");
     setVoiceMode("fallback");
     setAssistantPhase("setup");

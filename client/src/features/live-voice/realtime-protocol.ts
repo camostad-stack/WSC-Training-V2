@@ -11,11 +11,24 @@ export function buildRealtimeResponseCreateEvent(params: {
   };
 }
 
+export function isRealtimeResponseCompletionEvent(type: string) {
+  return type === "response.done";
+}
+
 export function claimRealtimeResponseCompletion(processedIds: Set<string>, responseId: string) {
   if (processedIds.has(responseId)) {
     return false;
   }
   processedIds.add(responseId);
+  return true;
+}
+
+export function claimRealtimeTranscriptItem(processedIds: Set<string>, itemId?: string | null) {
+  if (!itemId) return true;
+  if (processedIds.has(itemId)) {
+    return false;
+  }
+  processedIds.add(itemId);
   return true;
 }
 

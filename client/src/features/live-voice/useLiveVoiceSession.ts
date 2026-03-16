@@ -18,6 +18,7 @@ import {
 } from "@/features/live-voice/voice-renderer";
 import { playCustomerAudioTurn } from "@/features/live-voice/audio-playback";
 import {
+  getRealtimeEmployeeTurnFinalizeDelay,
   mergeRealtimeTranscriptSegments,
   resolveRealtimeResponseCompletion,
 } from "@/features/live-voice/realtime-control";
@@ -170,6 +171,9 @@ export function useLiveVoiceSession(params: {
   const pendingRealtimeTranscriptSegmentsRef = useRef<string[]>([]);
   const pendingRealtimeTranscriptTurnKeyRef = useRef<string | null>(null);
   const realtimeTurnFinalizeTimerRef = useRef<number | null>(null);
+  const realtimeEmployeeSpeakingRef = useRef(false);
+  const employeeSpeechRevisionRef = useRef(0);
+  const pendingRealtimeResponseRevisionRef = useRef<number | null>(null);
   const pendingRealtimeTerminalValidationRef = useRef<{
     isTerminal: boolean;
     terminalReason: string;
@@ -545,6 +549,8 @@ export function useLiveVoiceSession(params: {
     processedRealtimeTranscriptItemIdsRef.current.clear();
     pendingRealtimeTranscriptSegmentsRef.current = [];
     pendingRealtimeTranscriptTurnKeyRef.current = null;
+    realtimeEmployeeSpeakingRef.current = false;
+    pendingRealtimeResponseRevisionRef.current = null;
     dataChannelRef.current?.close();
     dataChannelRef.current = null;
     peerRef.current?.close();
@@ -830,6 +836,7 @@ export function useLiveVoiceSession(params: {
         outputModalities: sessionBlueprintRef.current?.responseModalities || ["audio", "text"],
         instructions: parsed?.realtimeResponseInstructions,
       }));
+      pendingRealtimeResponseRevisionRef.current = employeeSpeechRevisionRef.current;
       return;
     }
 
@@ -875,6 +882,11 @@ export function useLiveVoiceSession(params: {
   }, [appendCloseTriggerLog, appendStateSnapshot, appendTimingMarker, appendTranscript, appendTurnEvent, cleanupConnection, connectionState, getActiveVoiceCast, isMuted, params.scenario, processLiveTurn, recordBlockedPrematureClosure, sendClientEvent, speakCustomerMessage, startRecognition]);
 
   const flushPendingRealtimeEmployeeTurn = useCallback(async () => {
+    if (realtimeEmployeeSpeakingRef.current) {
+      scheduleRealtimeEmployeeTurnFinalize();
+      return;
+    }
+
     const transcriptText = mergeRealtimeTranscriptSegments(pendingRealtimeTranscriptSegmentsRef.current);
     const transcriptTurnKey = pendingRealtimeTranscriptTurnKeyRef.current || `employee-${Date.now()}`;
     pendingRealtimeTranscriptSegmentsRef.current = [];
@@ -956,9 +968,11 @@ export function useLiveVoiceSession(params: {
 
   const scheduleRealtimeEmployeeTurnFinalize = useCallback(() => {
     clearRealtimeTurnFinalizeTimer();
+    const mergedTranscript = mergeRealtimeTranscriptSegments(pendingRealtimeTranscriptSegmentsRef.current);
+    const delayMs = getRealtimeEmployeeTurnFinalizeDelay(mergedTranscript);
     realtimeTurnFinalizeTimerRef.current = window.setTimeout(() => {
       void flushPendingRealtimeEmployeeTurn();
-    }, REALTIME_EMPLOYEE_TURN_GRACE_MS);
+    }, delayMs);
   }, [clearRealtimeTurnFinalizeTimer, flushPendingRealtimeEmployeeTurn]);
 
   const enableLocalVoiceMode = useCallback(async (reason?: string) => {
@@ -1061,6 +1075,9 @@ export function useLiveVoiceSession(params: {
     const type = String(event.type ?? "");
 
     if (type === "input_audio_buffer.speech_started") {
+      realtimeEmployeeSpeakingRef.current = true;
+      employeeSpeechRevisionRef.current += 1;
+      pendingRealtimeResponseRevisionRef.current = null;
       clearRealtimeTurnFinalizeTimer();
       appendTimingMarker("employee_speech_started");
       stopRenderedCustomerAudio(renderedCustomerAudioRef.current);
@@ -1070,6 +1087,7 @@ export function useLiveVoiceSession(params: {
       return;
     }
     if (type === "input_audio_buffer.speech_stopped") {
+      realtimeEmployeeSpeakingRef.current = false;
       appendTimingMarker("employee_speech_stopped");
       if (pendingRealtimeTranscriptSegmentsRef.current.length > 0) {
         scheduleRealtimeEmployeeTurnFinalize();
@@ -1101,7 +1119,9 @@ export function useLiveVoiceSession(params: {
         ];
         pendingRealtimeTranscriptTurnKeyRef.current = pendingRealtimeTranscriptTurnKeyRef.current || `employee-${transcriptItemId || Date.now()}`;
         setDraftTranscript(mergeRealtimeTranscriptSegments(pendingRealtimeTranscriptSegmentsRef.current));
-        scheduleRealtimeEmployeeTurnFinalize();
+        if (!realtimeEmployeeSpeakingRef.current) {
+          scheduleRealtimeEmployeeTurnFinalize();
+        }
       }
       return;
     }
@@ -1147,6 +1167,29 @@ export function useLiveVoiceSession(params: {
       return;
     }
     if (isRealtimeResponseCompletionEvent(type)) {
+      if (
+        pendingRealtimeResponseRevisionRef.current !== null
+        && pendingRealtimeResponseRevisionRef.current !== employeeSpeechRevisionRef.current
+      ) {
+        const staleResponseId = String(event.response_id ?? (event.response as Record<string, unknown> | undefined)?.id ?? null);
+        appendTurnEvent({
+          type: "stale_customer_response_ignored",
+          source: "system",
+          atMs: nowMs(startedAtRef.current),
+          payload: {
+            responseId: staleResponseId,
+            requestRevision: pendingRealtimeResponseRevisionRef.current,
+            currentRevision: employeeSpeechRevisionRef.current,
+          },
+        });
+        if (staleResponseId) {
+          customerTextBufferRef.current.delete(staleResponseId);
+          customerTranscriptBufferRef.current.delete(staleResponseId);
+        }
+        pendingRealtimeTerminalValidationRef.current = null;
+        pendingRealtimeResponseRevisionRef.current = null;
+        return;
+      }
       const responseId = String(event.response_id ?? (event.response as Record<string, unknown> | undefined)?.id ?? Date.now());
       if (!claimRealtimeResponseCompletion(processedRealtimeResponseIdsRef.current, responseId)) {
         customerTextBufferRef.current.delete(responseId);
@@ -1209,6 +1252,7 @@ export function useLiveVoiceSession(params: {
       }
       const pendingTerminal = pendingRealtimeTerminalValidationRef.current;
       const completionDecision = resolveRealtimeResponseCompletion(pendingTerminal);
+      pendingRealtimeResponseRevisionRef.current = null;
       if (completionDecision.shouldEndSession) {
         appendTurnEvent({
           type: "terminal_state_accepted",
@@ -1336,6 +1380,9 @@ export function useLiveVoiceSession(params: {
     processingRealtimeTurnRef.current = false;
     processedRealtimeResponseIdsRef.current.clear();
     processedRealtimeTranscriptItemIdsRef.current.clear();
+    pendingRealtimeTranscriptSegmentsRef.current = [];
+    pendingRealtimeTranscriptTurnKeyRef.current = null;
+    pendingRealtimeResponseRevisionRef.current = null;
     setDraftTranscript("");
     setVoiceMode("fallback");
     setAssistantPhase("setup");

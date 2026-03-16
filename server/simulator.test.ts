@@ -1,6 +1,7 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
+import { ENV } from "./_core/env";
 import { buildUtteranceAnalysisDefaults } from "./services/simulation/analysis";
 
 // Mock the LLM module
@@ -573,8 +574,14 @@ describe("simulator.customerReply", () => {
 // ─── Prompt 6: Full Evaluation (includes policy grounding) ───
 
 describe("simulator.evaluate", () => {
+  const originalForgeApiKey = ENV.forgeApiKey;
+
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    ENV.forgeApiKey = originalForgeApiKey;
   });
 
   it("returns completed deterministic evaluation when AI is unavailable", async () => {
@@ -715,6 +722,85 @@ describe("simulator.evaluate", () => {
     expect(result.coaching.do_this_next_time[0]).toContain("Open warmer");
     expect(result.coaching.replacement_phrases[0]).toContain("Welcome in");
     expect(result.evaluation.ideal_response_example).toContain("best fit");
+  });
+
+  it("keeps scoring the session when policy grounding fails", async () => {
+    ENV.forgeApiKey = "test-forge-key";
+
+    mockInvokeLLM.mockRejectedValueOnce(new Error("policy grounding unavailable"));
+    mockLLMResponse({
+      session_quality: "valid",
+      flags: [],
+      reason: "",
+      retry_recommended: false,
+    });
+    mockLLMResponse({
+      overall_score: 78,
+      pass_fail: "pass",
+      readiness_signal: "ready_with_coaching",
+      category_scores: {
+        opening_warmth: 7,
+        listening_empathy: 7,
+        clarity_directness: 7,
+        policy_accuracy: 6,
+        ownership: 8,
+        problem_solving: 7,
+        de_escalation: 6,
+        escalation_judgment: 6,
+        visible_professionalism: 0,
+        closing_control: 7,
+      },
+      score_dimensions: {
+        interaction_quality: 74,
+        operational_effectiveness: 76,
+        outcome_quality: 82,
+      },
+      best_moments: ["Took ownership of the billing issue."],
+      missed_moments: ["Could have named the follow-up timeline sooner."],
+      critical_mistakes: [],
+      coachable_mistakes: ["Add the timeline earlier."],
+      most_important_correction: "State the owner and timeline earlier in the call.",
+      ideal_response_example: "I can see one pending charge and one final charge. I am escalating this to billing today, and you will hear back by 3 PM.",
+      summary: "Solid handling with a concrete next step.",
+    });
+    mockLLMResponse({
+      employee_coaching_summary: "You moved the billing issue forward with ownership.",
+      what_you_did_well: ["Took ownership quickly."],
+      what_hurt_you: ["Delayed the timeline."],
+      do_this_next_time: ["Name the billing owner and callback time earlier."],
+      replacement_phrases: ["I am escalating this to billing today, and you will hear back by 3 PM."],
+      practice_focus: "timeline_control",
+      next_recommended_scenario: "repeat_current_scenario",
+    });
+    mockLLMResponse({
+      manager_summary: "The rep handled the issue well overall and should tighten timeline control.",
+      performance_signal: "yellow",
+      top_strengths: ["Ownership"],
+      top_corrections: ["Earlier timeline clarity"],
+      whether_live_shadowing_is_needed: false,
+      whether_manager_follow_up_is_needed: false,
+      recommended_follow_up_action: "Coach on naming owner and timeline faster.",
+      recommended_next_drill: "timeline_control",
+    });
+
+    const caller = appRouter.createCaller(createAuthContext());
+    const result = await caller.simulator.evaluate({
+      scenarioJson: createScenarioFixture(),
+      transcript: [
+        { role: "customer", message: "Why are there two charges on my account?" },
+        { role: "employee", message: "I can see one pending charge and one final charge, and I am escalating this to billing today." },
+        { role: "customer", message: "Okay, when am I hearing back?" },
+        { role: "employee", message: "You will hear back by 3 PM today." },
+      ],
+      employeeRole: "Front Desk Associate",
+    }) as any;
+
+    expect(result.processingStatus).toBe("completed");
+    expect(result.failure).toBeUndefined();
+    expect(result.policyGrounding.policy_accuracy).toBe("not_evaluated");
+    expect(result.policyGrounding.policy_notes).toContain("scoring continued without policy-specific grading");
+    expect(result.evaluation.overall_score).toBeGreaterThan(0);
+    expect(result.coaching.employee_coaching_summary).toContain("ownership");
   });
 
   it("caps outcome-gated scores when the employee tries to close without a real outcome", async () => {

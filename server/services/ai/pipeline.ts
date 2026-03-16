@@ -1524,6 +1524,21 @@ function buildFailureBundle(params: {
   };
 }
 
+function buildPolicyGroundingFallback(params: {
+  error: PromptExecutionError;
+}): PolicyGroundingResult {
+  return policyGroundingResultSchema.parse({
+    policy_accuracy: "not_evaluated",
+    matched_policy_points: [],
+    missed_policy_points: [],
+    invented_or_risky_statements: [],
+    should_have_escalated: false,
+    policy_notes: params.error.code === "malformed_json"
+      ? "Policy grounding returned malformed structured output, so scoring continued without policy-specific grading for this run."
+      : "Policy grounding was unavailable for this run, so scoring continued without policy-specific grading.",
+  });
+}
+
 async function retrievePolicyContext(params: {
   department?: string;
   scenarioFamily?: string;
@@ -1933,10 +1948,20 @@ export async function runPostSessionEvaluation(params: {
     .join("\n\n");
 
   try {
-    const policyGrounding = await runPrompt(
-      AI_SERVICE_REGISTRY.policyGrounding,
-      `Scenario:\n${JSON.stringify(params.scenarioJson, null, 2)}\n\nApproved policy context:\n${policyContext}\n\nEmployee response:\n${employeeResponses}`,
-    );
+    let validatedPolicyGrounding: PolicyGroundingResult;
+    try {
+      const policyGrounding = await runPrompt(
+        AI_SERVICE_REGISTRY.policyGrounding,
+        `Scenario:\n${JSON.stringify(params.scenarioJson, null, 2)}\n\nApproved policy context:\n${policyContext}\n\nEmployee response:\n${employeeResponses}`,
+      );
+      validatedPolicyGrounding = policyGroundingResultSchema.parse(policyGrounding);
+    } catch (error) {
+      if (error instanceof PromptExecutionError && error.promptName === AI_SERVICE_REGISTRY.policyGrounding.name) {
+        validatedPolicyGrounding = buildPolicyGroundingFallback({ error });
+      } else {
+        throw error;
+      }
+    }
 
     const sessionQuality = await runPrompt(
       AI_SERVICE_REGISTRY.lowEffortDetector,
@@ -1945,7 +1970,7 @@ export async function runPostSessionEvaluation(params: {
 
     const evaluation = await runPrompt(
       AI_SERVICE_REGISTRY.interactionEvaluator,
-      `Scenario:\n${JSON.stringify(params.scenarioJson, null, 2)}\n\nTranscript:\n${transcriptText}\n\nConversation state history:\n${JSON.stringify(stateHistory, null, 2)}\n\nPolicy grounding:\n${JSON.stringify(policyGrounding, null, 2)}\n\nVisible behavior:\n${JSON.stringify(mediaAssessment.visibleBehavior, null, 2)}`,
+      `Scenario:\n${JSON.stringify(params.scenarioJson, null, 2)}\n\nTranscript:\n${transcriptText}\n\nConversation state history:\n${JSON.stringify(stateHistory, null, 2)}\n\nPolicy grounding:\n${JSON.stringify(validatedPolicyGrounding, null, 2)}\n\nVisible behavior:\n${JSON.stringify(mediaAssessment.visibleBehavior, null, 2)}`,
     );
 
     const coaching = await runPrompt(
@@ -1958,7 +1983,6 @@ export async function runPostSessionEvaluation(params: {
       `Employee name: ${params.employeeName || "Training Employee"}\nRole: ${params.employeeRole}\nScenario: ${JSON.stringify(params.scenarioJson, null, 2)}\nEvaluation: ${JSON.stringify(evaluation, null, 2)}\nCoaching: ${JSON.stringify(coaching, null, 2)}`,
     );
 
-    const validatedPolicyGrounding = policyGroundingResultSchema.parse(policyGrounding);
     const validatedSessionQuality = sessionQualityResultSchema.parse(sessionQuality);
     const validatedEvaluation = finalizeEvaluationFromEvidence({
       scenarioJson: parsedScenario,

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  getRealtimeEmployeeTurnFinalizeDelay,
+  looksLikeIncompleteEmployeeTurn,
   mergeRealtimeTranscriptSegments,
   resolveRealtimeResponseCompletion,
 } from "./realtime-control";
@@ -44,5 +46,13 @@ describe("resolveRealtimeResponseCompletion", () => {
       "or email for that team?",
       "I want to reach out if I don’t hear back.",
     ])).toBe("And what’s the direct line or email for that team? I want to reach out if I don’t hear back.");
+  });
+
+  it("holds clearly unfinished employee turns longer before finalizing", () => {
+    expect(looksLikeIncompleteEmployeeTurn("Yes, so I can")).toBe(true);
+    expect(getRealtimeEmployeeTurnFinalizeDelay("Yes, so I can")).toBe(5600);
+    expect(getRealtimeEmployeeTurnFinalizeDelay("I can explain the two charges, and")).toBe(4200);
+    expect(looksLikeIncompleteEmployeeTurn("Yes, I can do that.")).toBe(false);
+    expect(getRealtimeEmployeeTurnFinalizeDelay("Yes, I can do that.")).toBe(1500);
   });
 });

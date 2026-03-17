@@ -19,17 +19,19 @@ import {
 import { playCustomerAudioTurn } from "@/features/live-voice/audio-playback";
 import {
   getRealtimeEmployeeTurnFinalizeDelay,
-  mergeRealtimeTranscriptSegments,
-  resolveRealtimeTranscriptFinalize,
   resolveRealtimeResponseCompletion,
 } from "@/features/live-voice/realtime-control";
 import {
   buildRealtimeResponseCreateEvent,
-  claimRealtimeTranscriptItem,
   claimRealtimeResponseCompletion,
   extractRealtimeErrorMessage,
   isRealtimeResponseCompletionEvent,
 } from "@/features/live-voice/realtime-protocol";
+import {
+  applyRealtimeTurnSequencerEvent,
+  consumeRealtimeTurnSequencerState,
+  createRealtimeTurnSequencerState,
+} from "@/features/live-voice/realtime-turn-sequencer";
 import {
   appendBlockedPrematureClosureToState,
   deriveConversationRuntimeView,
@@ -168,12 +170,8 @@ export function useLiveVoiceSession(params: {
   const browserSpeechVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const sessionBlueprintRef = useRef<Awaited<ReturnType<typeof createCredentials.mutateAsync>> | null>(null);
   const processedRealtimeResponseIdsRef = useRef<Set<string>>(new Set());
-  const processedRealtimeTranscriptItemIdsRef = useRef<Set<string>>(new Set());
-  const pendingRealtimeTranscriptSegmentsRef = useRef<string[]>([]);
-  const pendingRealtimeTranscriptTurnKeyRef = useRef<string | null>(null);
+  const realtimeTurnSequencerRef = useRef(createRealtimeTurnSequencerState());
   const realtimeTurnFinalizeTimerRef = useRef<number | null>(null);
-  const realtimeEmployeeSpeakingRef = useRef(false);
-  const realtimeObservedSpeechStopRef = useRef(false);
   const employeeSpeechRevisionRef = useRef(0);
   const pendingRealtimeResponseRevisionRef = useRef<number | null>(null);
   const pendingRealtimeTerminalValidationRef = useRef<{
@@ -548,11 +546,7 @@ export function useLiveVoiceSession(params: {
     customerTextBufferRef.current.clear();
     customerTranscriptBufferRef.current.clear();
     processedRealtimeResponseIdsRef.current.clear();
-    processedRealtimeTranscriptItemIdsRef.current.clear();
-    pendingRealtimeTranscriptSegmentsRef.current = [];
-    pendingRealtimeTranscriptTurnKeyRef.current = null;
-    realtimeEmployeeSpeakingRef.current = false;
-    realtimeObservedSpeechStopRef.current = false;
+    realtimeTurnSequencerRef.current = createRealtimeTurnSequencerState();
     pendingRealtimeResponseRevisionRef.current = null;
     dataChannelRef.current?.close();
     dataChannelRef.current = null;
@@ -885,18 +879,20 @@ export function useLiveVoiceSession(params: {
   }, [appendCloseTriggerLog, appendStateSnapshot, appendTimingMarker, appendTranscript, appendTurnEvent, cleanupConnection, connectionState, getActiveVoiceCast, isMuted, params.scenario, processLiveTurn, recordBlockedPrematureClosure, sendClientEvent, speakCustomerMessage, startRecognition]);
 
   const flushPendingRealtimeEmployeeTurn = useCallback(async () => {
-    if (realtimeEmployeeSpeakingRef.current) {
-      scheduleRealtimeEmployeeTurnFinalize();
+    if (realtimeTurnSequencerRef.current.isEmployeeSpeaking) {
+      scheduleRealtimeEmployeeTurnFinalize("watchdog");
       return;
     }
 
-    const transcriptText = mergeRealtimeTranscriptSegments(pendingRealtimeTranscriptSegmentsRef.current);
-    const transcriptTurnKey = pendingRealtimeTranscriptTurnKeyRef.current || `employee-${Date.now()}`;
-    pendingRealtimeTranscriptSegmentsRef.current = [];
-    pendingRealtimeTranscriptTurnKeyRef.current = null;
-    realtimeObservedSpeechStopRef.current = false;
+    const consumedTurn = consumeRealtimeTurnSequencerState(
+      realtimeTurnSequencerRef.current,
+      `employee-${Date.now()}`,
+    );
+    realtimeTurnSequencerRef.current = consumedTurn.nextState;
     clearRealtimeTurnFinalizeTimer();
 
+    const transcriptText = consumedTurn.transcriptText;
+    const transcriptTurnKey = consumedTurn.transcriptTurnKey;
     if (!transcriptText) {
       return;
     }
@@ -972,7 +968,12 @@ export function useLiveVoiceSession(params: {
 
   const scheduleRealtimeEmployeeTurnFinalize = useCallback((strategy: "normal" | "watchdog" = "normal") => {
     clearRealtimeTurnFinalizeTimer();
-    const mergedTranscript = mergeRealtimeTranscriptSegments(pendingRealtimeTranscriptSegmentsRef.current);
+    const mergedTranscript = realtimeTurnSequencerRef.current.pendingTranscriptSegments
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
     const baseDelayMs = getRealtimeEmployeeTurnFinalizeDelay(mergedTranscript);
     const delayMs = strategy === "watchdog"
       ? Math.max(baseDelayMs, 9000)
@@ -1082,11 +1083,15 @@ export function useLiveVoiceSession(params: {
     const type = String(event.type ?? "");
 
     if (type === "input_audio_buffer.speech_started") {
-      realtimeEmployeeSpeakingRef.current = true;
-      realtimeObservedSpeechStopRef.current = false;
+      const transition = applyRealtimeTurnSequencerEvent(realtimeTurnSequencerRef.current, {
+        type: "input_audio_buffer.speech_started",
+      });
+      realtimeTurnSequencerRef.current = transition.nextState;
       employeeSpeechRevisionRef.current += 1;
       pendingRealtimeResponseRevisionRef.current = null;
-      clearRealtimeTurnFinalizeTimer();
+      if (transition.clearFinalizeTimer) {
+        clearRealtimeTurnFinalizeTimer();
+      }
       appendTimingMarker("employee_speech_started");
       stopRenderedCustomerAudio(renderedCustomerAudioRef.current);
       renderedCustomerAudioRef.current = null;
@@ -1095,16 +1100,13 @@ export function useLiveVoiceSession(params: {
       return;
     }
     if (type === "input_audio_buffer.speech_stopped") {
-      realtimeEmployeeSpeakingRef.current = false;
-      realtimeObservedSpeechStopRef.current = true;
-      appendTimingMarker("employee_speech_stopped");
-      const finalizeDecision = resolveRealtimeTranscriptFinalize({
-        hasPendingTranscript: pendingRealtimeTranscriptSegmentsRef.current.length > 0,
-        isEmployeeCurrentlySpeaking: realtimeEmployeeSpeakingRef.current,
-        observedSpeechStopForPendingTurn: realtimeObservedSpeechStopRef.current,
+      const transition = applyRealtimeTurnSequencerEvent(realtimeTurnSequencerRef.current, {
+        type: "input_audio_buffer.speech_stopped",
       });
-      if (finalizeDecision.shouldScheduleFinalize) {
-        scheduleRealtimeEmployeeTurnFinalize(finalizeDecision.strategy === "watchdog" ? "watchdog" : "normal");
+      realtimeTurnSequencerRef.current = transition.nextState;
+      appendTimingMarker("employee_speech_stopped");
+      if (transition.finalizeDecision.shouldScheduleFinalize) {
+        scheduleRealtimeEmployeeTurnFinalize(transition.finalizeDecision.strategy === "watchdog" ? "watchdog" : "normal");
       }
       return;
     }
@@ -1114,7 +1116,15 @@ export function useLiveVoiceSession(params: {
           ?? ((event.item as Record<string, unknown> | undefined)?.id)
           ?? "",
       ).trim();
-      if (!claimRealtimeTranscriptItem(processedRealtimeTranscriptItemIdsRef.current, transcriptItemId || undefined)) {
+      const transcriptText = extractTextFromUnknown(event.transcript ?? event.item);
+      const transition = applyRealtimeTurnSequencerEvent(realtimeTurnSequencerRef.current, {
+        type: "conversation.item.input_audio_transcription.completed",
+        itemId: transcriptItemId || undefined,
+        transcriptText: transcriptText || "",
+        fallbackTurnKey: `employee-${transcriptItemId || Date.now()}`,
+      });
+      realtimeTurnSequencerRef.current = transition.nextState;
+      if (transition.duplicateTranscriptIgnored) {
         appendTurnEvent({
           type: "duplicate_transcript_completion_ignored",
           source: "system",
@@ -1125,22 +1135,11 @@ export function useLiveVoiceSession(params: {
         });
         return;
       }
-      const transcriptText = extractTextFromUnknown(event.transcript ?? event.item);
-      if (transcriptText) {
-        pendingRealtimeTranscriptSegmentsRef.current = [
-          ...pendingRealtimeTranscriptSegmentsRef.current,
-          transcriptText,
-        ];
-        pendingRealtimeTranscriptTurnKeyRef.current = pendingRealtimeTranscriptTurnKeyRef.current || `employee-${transcriptItemId || Date.now()}`;
-        setDraftTranscript(mergeRealtimeTranscriptSegments(pendingRealtimeTranscriptSegmentsRef.current));
-        const finalizeDecision = resolveRealtimeTranscriptFinalize({
-          hasPendingTranscript: pendingRealtimeTranscriptSegmentsRef.current.length > 0,
-          isEmployeeCurrentlySpeaking: realtimeEmployeeSpeakingRef.current,
-          observedSpeechStopForPendingTurn: realtimeObservedSpeechStopRef.current,
-        });
-        if (finalizeDecision.shouldScheduleFinalize) {
-          scheduleRealtimeEmployeeTurnFinalize(finalizeDecision.strategy === "watchdog" ? "watchdog" : "normal");
-        }
+      if (transition.mergedTranscript) {
+        setDraftTranscript(transition.mergedTranscript);
+      }
+      if (transition.finalizeDecision.shouldScheduleFinalize) {
+        scheduleRealtimeEmployeeTurnFinalize(transition.finalizeDecision.strategy === "watchdog" ? "watchdog" : "normal");
       }
       return;
     }
@@ -1398,10 +1397,7 @@ export function useLiveVoiceSession(params: {
     pendingRealtimeTerminalValidationRef.current = null;
     processingRealtimeTurnRef.current = false;
     processedRealtimeResponseIdsRef.current.clear();
-    processedRealtimeTranscriptItemIdsRef.current.clear();
-    pendingRealtimeTranscriptSegmentsRef.current = [];
-    pendingRealtimeTranscriptTurnKeyRef.current = null;
-    realtimeObservedSpeechStopRef.current = false;
+    realtimeTurnSequencerRef.current = createRealtimeTurnSequencerState();
     pendingRealtimeResponseRevisionRef.current = null;
     setDraftTranscript("");
     setVoiceMode("fallback");

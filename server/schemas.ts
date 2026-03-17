@@ -576,11 +576,21 @@ export const evaluatorSchema = {
         score_dimensions: {
           type: "object",
           properties: {
-            interaction_quality: { type: "integer" },
-            operational_effectiveness: { type: "integer" },
-            outcome_quality: { type: "integer" },
+            member_connection: { type: "integer" },
+            listening_discovery: { type: "integer" },
+            ownership_accountability: { type: "integer" },
+            problem_solving_policy: { type: "integer" },
+            clarity_expectation_setting: { type: "integer" },
+            resolution_control: { type: "integer" },
           },
-          required: ["interaction_quality", "operational_effectiveness", "outcome_quality"],
+          required: [
+            "member_connection",
+            "listening_discovery",
+            "ownership_accountability",
+            "problem_solving_policy",
+            "clarity_expectation_setting",
+            "resolution_control",
+          ],
           additionalProperties: false,
         },
         best_moments: { type: "array", items: { type: "string" } },
@@ -716,12 +726,124 @@ export const profileUpdateSchema = {
         consistency_score: { type: "integer" },
         recommended_next_steps: { type: "array", items: { type: "string" } },
         manager_attention_flag: { type: "boolean" },
+        longitudinal_profile: {
+          type: "object",
+          properties: {
+            framework_name: { type: "string" },
+            summary: { type: "string" },
+            stage_level: { type: "integer" },
+            stage_label: { type: "string" },
+            stage_summary: { type: "string" },
+            confidence: { type: "string", enum: ["emerging", "developing", "established"] },
+            evidence_window_sessions: { type: "integer" },
+            competencies: {
+              type: "object",
+              properties: {
+                business_operations: {
+                  type: "object",
+                  properties: {
+                    score: { type: "integer" },
+                    trend: { type: "string", enum: ["up", "steady", "down"] },
+                    summary: { type: "string" },
+                  },
+                  required: ["score", "trend", "summary"],
+                  additionalProperties: false,
+                },
+                drive_self_motivation: {
+                  type: "object",
+                  properties: {
+                    score: { type: "integer" },
+                    trend: { type: "string", enum: ["up", "steady", "down"] },
+                    summary: { type: "string" },
+                  },
+                  required: ["score", "trend", "summary"],
+                  additionalProperties: false,
+                },
+                reliability_consistency: {
+                  type: "object",
+                  properties: {
+                    score: { type: "integer" },
+                    trend: { type: "string", enum: ["up", "steady", "down"] },
+                    summary: { type: "string" },
+                  },
+                  required: ["score", "trend", "summary"],
+                  additionalProperties: false,
+                },
+                proactivity_initiative: {
+                  type: "object",
+                  properties: {
+                    score: { type: "integer" },
+                    trend: { type: "string", enum: ["up", "steady", "down"] },
+                    summary: { type: "string" },
+                  },
+                  required: ["score", "trend", "summary"],
+                  additionalProperties: false,
+                },
+                work_ethic: {
+                  type: "object",
+                  properties: {
+                    score: { type: "integer" },
+                    trend: { type: "string", enum: ["up", "steady", "down"] },
+                    summary: { type: "string" },
+                  },
+                  required: ["score", "trend", "summary"],
+                  additionalProperties: false,
+                },
+                problem_solving_adaptability: {
+                  type: "object",
+                  properties: {
+                    score: { type: "integer" },
+                    trend: { type: "string", enum: ["up", "steady", "down"] },
+                    summary: { type: "string" },
+                  },
+                  required: ["score", "trend", "summary"],
+                  additionalProperties: false,
+                },
+                community_builder: {
+                  type: "object",
+                  properties: {
+                    score: { type: "integer" },
+                    trend: { type: "string", enum: ["up", "steady", "down"] },
+                    summary: { type: "string" },
+                  },
+                  required: ["score", "trend", "summary"],
+                  additionalProperties: false,
+                },
+              },
+              required: [
+                "business_operations",
+                "drive_self_motivation",
+                "reliability_consistency",
+                "proactivity_initiative",
+                "work_ethic",
+                "problem_solving_adaptability",
+                "community_builder"
+              ],
+              additionalProperties: false,
+            },
+            development_priorities: { type: "array", items: { type: "string" } },
+            manager_observation_focus: { type: "array", items: { type: "string" } },
+          },
+          required: [
+            "framework_name",
+            "summary",
+            "stage_level",
+            "stage_label",
+            "stage_summary",
+            "confidence",
+            "evidence_window_sessions",
+            "competencies",
+            "development_priorities",
+            "manager_observation_focus"
+          ],
+          additionalProperties: false,
+        },
       },
       required: [
         "level_estimate", "readiness_status", "trend", "skill_map",
         "strongest_scenario_families", "weakest_scenario_families",
         "pressure_handling", "consistency_score", "recommended_next_steps",
-        "manager_attention_flag"
+        "manager_attention_flag", "longitudinal_profile"
       ],
       additionalProperties: false,
     },

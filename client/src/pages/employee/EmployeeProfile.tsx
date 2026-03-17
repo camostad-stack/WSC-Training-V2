@@ -7,6 +7,11 @@ import { Loader2, TrendingUp, TrendingDown, Minus, AlertTriangle, LogOut } from 
 import { familyLabels } from "@/features/simulator/config";
 import { Card, CardContent } from "@/components/ui/card";
 import { useLocation } from "wouter";
+import {
+  deriveLegacyLongitudinalProfileFallback,
+  getLongitudinalCompetencyEntries,
+  normalizeLongitudinalProfile,
+} from "@shared/longitudinal-profile";
 
 const readinessConfig: Record<string, { label: string; color: string }> = {
   not_ready: { label: "Not Ready", color: "text-red-400 bg-red-500/10 border-red-500/20" },
@@ -43,9 +48,42 @@ export default function EmployeeProfile() {
   const rCfg = readinessConfig[readiness] || readinessConfig.not_ready;
   const trend = p?.trend || "flat";
   const TrendIcon = trendIcons[trend] || Minus;
-  const skillMap = (p?.skillMap as Record<string, number>) || {};
-  const strongest = (p?.strongestFamilies as string[]) || [];
-  const weakest = (p?.weakestFamilies as string[]) || [];
+  const skillMap = (() => {
+    try { return typeof p?.skillMap === "string" ? JSON.parse(p.skillMap) : (p?.skillMap || {}); }
+    catch { return {}; }
+  })() as Record<string, number>;
+  const strongest = (() => {
+    try { return typeof p?.strongestFamilies === "string" ? JSON.parse(p.strongestFamilies) : (p?.strongestFamilies || []); }
+    catch { return []; }
+  })() as string[];
+  const weakest = (() => {
+    try { return typeof p?.weakestFamilies === "string" ? JSON.parse(p.weakestFamilies) : (p?.weakestFamilies || []); }
+    catch { return []; }
+  })() as string[];
+  const longitudinalProfile = (() => {
+    if (!p?.longitudinalProfile) {
+      return deriveLegacyLongitudinalProfileFallback({
+        levelEstimate: p?.levelEstimate,
+        totalSessions: p?.totalSessions,
+        consistencyScore: p?.consistencyScore,
+        skillMap,
+      });
+    }
+
+    try {
+      return normalizeLongitudinalProfile(
+        typeof p.longitudinalProfile === "string" ? JSON.parse(p.longitudinalProfile) : p.longitudinalProfile,
+      );
+    } catch {
+      return deriveLegacyLongitudinalProfileFallback({
+        levelEstimate: p?.levelEstimate,
+        totalSessions: p?.totalSessions,
+        consistencyScore: p?.consistencyScore,
+        skillMap,
+      });
+    }
+  })();
+  const longitudinalEntries = getLongitudinalCompetencyEntries(longitudinalProfile);
 
   if (profile.isLoading) {
     return (
@@ -107,14 +145,14 @@ export default function EmployeeProfile() {
         </div>
       </div>
 
-      {/* Readiness + Level */}
+      {/* Readiness + Practice Level */}
       <div className="panel p-4 flex items-center justify-between">
         <div>
           <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase mb-1">Readiness</div>
           <Badge variant="outline" className={`${rCfg.color} text-xs`}>{rCfg.label}</Badge>
         </div>
         <div className="text-right">
-          <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase mb-1">Level</div>
+          <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase mb-1">Practice Level</div>
           <span className="font-mono text-lg font-bold text-teal">{p?.levelEstimate || "—"}</span>
         </div>
         <div className="text-right">
@@ -134,9 +172,68 @@ export default function EmployeeProfile() {
         </div>
       )}
 
-      {/* Skill Map */}
+      {/* Longitudinal Profile */}
+      <div className="panel p-4 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase">Longitudinal Growth Profile</div>
+            <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+              This tracks repeated development across sessions. It is separate from the one-call scorecard.
+            </p>
+          </div>
+          <Badge variant="outline" className="text-[10px] font-mono border-border">
+            {longitudinalProfile.stage_label}
+          </Badge>
+        </div>
+        <div className="rounded-xl border border-border bg-background/40 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">{longitudinalProfile.framework_name}</div>
+              <div className="mt-1 text-xs text-muted-foreground leading-relaxed">{longitudinalProfile.stage_summary}</div>
+            </div>
+            <Badge variant="outline" className="text-[10px] font-mono border-border">
+              {longitudinalProfile.confidence}
+            </Badge>
+          </div>
+        </div>
+        <div className="space-y-3">
+          {longitudinalEntries.map((entry) => (
+            <div key={entry.key} className="rounded-xl border border-border bg-background/40 p-3">
+              <div className="flex items-start justify-between gap-3 text-xs mb-2">
+                <div>
+                  <div className="text-foreground font-medium">{entry.label}</div>
+                  <div className="mt-1 text-muted-foreground leading-relaxed">{entry.description}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="font-mono text-foreground">{entry.score}/100</div>
+                  <div className="text-[10px] text-muted-foreground font-mono uppercase">{entry.trend}</div>
+                </div>
+              </div>
+              <Progress value={entry.score} className="h-2 mb-2" />
+              <div className="text-[11px] text-muted-foreground leading-relaxed">{entry.summary}</div>
+              <div className="mt-2">
+                <Badge variant="outline" className="text-[10px] font-mono border-border">
+                  {entry.manager_confirmation_needed ? "Manager confirmation needed" : "Simulator observable"}
+                </Badge>
+              </div>
+            </div>
+          ))}
+        </div>
+        {longitudinalProfile.development_priorities.length > 0 && (
+          <div className="rounded-xl border border-border bg-background/40 p-3">
+            <div className="text-[11px] font-mono text-muted-foreground uppercase tracking-wider mb-2">Development Priorities</div>
+            <ul className="space-y-1.5 text-sm text-muted-foreground">
+              {longitudinalProfile.development_priorities.map((item) => (
+                <li key={item}>- {item}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {/* Practice Signals */}
       <div className="panel p-4">
-        <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase mb-3">Skill Map</div>
+        <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase mb-3">Practice Signals</div>
         <div className="space-y-3">
           {Object.entries(skillLabels).map(([key, label]) => {
             const val = skillMap[key] || 0;
@@ -192,6 +289,10 @@ export default function EmployeeProfile() {
             <Button variant="outline" className="w-full" onClick={() => recentSessions.refetch()}>
               Retry History
             </Button>
+          </div>
+        ) : recentSessions.isLoading ? (
+          <div className="flex items-center justify-center py-6">
+            <Loader2 className="h-5 w-5 animate-spin text-teal" />
           </div>
         ) : recentSessions.data && recentSessions.data.length > 0 ? (
           <div className="space-y-2">

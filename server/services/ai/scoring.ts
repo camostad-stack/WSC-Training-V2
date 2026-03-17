@@ -1,4 +1,7 @@
 import { getConversationOutcomeState, isTerminalConversationState } from "../../../shared/conversation-outcome";
+import {
+  DEFAULT_EVALUATION_RUBRIC,
+} from "../../../shared/evaluation-rubric";
 import { getScenarioGoal } from "../../../shared/wsc-content";
 import { analyzeEmployeeUtterance } from "../simulation/analysis";
 import {
@@ -8,6 +11,8 @@ import {
   type StateUpdateResult,
   type TranscriptTurn,
 } from "./contracts";
+
+export { DEFAULT_EVALUATION_RUBRIC };
 
 export const DEFAULT_CATEGORY_SCORES = {
   opening_warmth: 0,
@@ -22,17 +27,9 @@ export const DEFAULT_CATEGORY_SCORES = {
   closing_control: 0,
 } as const;
 
-export const DEFAULT_EVALUATION_RUBRIC = {
-  name: "Outcome Weighted",
-  dimension_weights: {
-    interaction_quality: 20,
-    operational_effectiveness: 25,
-    outcome_quality: 55,
-  },
-} as const satisfies EvaluationResult["score_rubric"];
-
 type CategoryScores = EvaluationResult["category_scores"];
 type PriorityCategory = keyof typeof DEFAULT_CATEGORY_SCORES;
+type ScoreDimensions = NonNullable<EvaluationResult["score_dimensions"]>;
 
 export type OutcomeEvidence = {
   finalOutcomeState: string;
@@ -54,6 +51,8 @@ export type OutcomeEvidence = {
   disrespectRate: number;
   policyGroundedRate: number;
   resolutionTurnRate: number;
+  criticalFailureDetected: boolean;
+  noRealOwnershipDetected: boolean;
 };
 
 function clampScore(value: number, min = 0, max = 10) {
@@ -255,6 +254,15 @@ export function buildStateHistoryEvidence(params: {
     || analysis.explicitRecommendation
     || analysis.escalatedAppropriately,
   ) / totalAnalyses;
+  const criticalFailureDetected =
+    params.stateHistory.some((state) => Boolean(state.employee_flags?.critical_error))
+    || analyses.some((analysis) =>
+      analysis.disrespect
+      || analysis.soundedRude
+      || analysis.soundedDismissive
+      || analysis.blameShifting
+      || (analysis.policyMisuse && analysis.accuracy <= 3),
+    );
   const customerImproved = Boolean(initialState && finalState)
     && (
       (finalState.trust_level > initialState.trust_level)
@@ -267,6 +275,15 @@ export function buildStateHistoryEvidence(params: {
       finalState.offense_level < initialState.offense_level
       || finalState.manager_request_level < initialState.manager_request_level
       || (isCalmerEmotion(finalState.emotion_state) && !isEscalatedEmotion(initialState.emotion_state))
+    );
+  const noRealOwnershipDetected =
+    !acceptedNextStep
+    && !validRedirect
+    && (
+      !realNextStep
+      || ownershipRate < 0.5
+      || resolutionTurnRate < 0.34
+      || avoidantRate >= 0.34
     );
 
   return {
@@ -293,6 +310,8 @@ export function buildStateHistoryEvidence(params: {
       disrespectRate,
       policyGroundedRate,
       resolutionTurnRate,
+      criticalFailureDetected,
+      noRealOwnershipDetected,
     } satisfies OutcomeEvidence,
   };
 }
@@ -304,32 +323,81 @@ function capCategoryScore(value: number, maxAllowed: number, condition: boolean)
 export function deriveScoreDimensions(params: {
   categoryScores: CategoryScores;
   evidence: OutcomeEvidence;
-}) {
-  const interactionQuality = clampScore(average([
-    params.categoryScores.opening_warmth,
-    params.categoryScores.listening_empathy,
-    params.categoryScores.clarity_directness,
-    params.categoryScores.de_escalation,
-    params.categoryScores.visible_professionalism,
-  ]) * 10, 0, 100);
+}): ScoreDimensions {
+  const memberConnection = clampScore(
+    (average([
+      params.categoryScores.opening_warmth,
+      params.categoryScores.listening_empathy,
+      params.categoryScores.visible_professionalism,
+    ]) * 10)
+      + (params.evidence.customerFeltHeard ? 6 : -4)
+      + (params.evidence.deEscalated ? 4 : 0)
+      - (params.evidence.disrespectRate >= 0.34 ? 18 : 0),
+    0,
+    100,
+  );
 
-  const operationalEffectiveness = clampScore(average([
-    params.categoryScores.policy_accuracy,
-    params.categoryScores.ownership,
-    params.categoryScores.problem_solving,
-    params.categoryScores.escalation_judgment,
-    params.categoryScores.closing_control,
-  ]) * 10, 0, 100);
+  const listeningDiscovery = clampScore(
+    (average([
+      params.categoryScores.listening_empathy,
+      params.categoryScores.clarity_directness,
+    ]) * 10)
+      + (params.evidence.addressedConcernRate >= 0.6 ? 8 : params.evidence.addressedConcern ? 2 : -10)
+      + (params.evidence.customerFeltHeard ? 4 : -4)
+      - (params.evidence.avoidantRate >= 0.5 ? 12 : 0),
+    0,
+    100,
+  );
 
-  let outcomeQualityBase = 18;
-  if (params.evidence.finalOutcomeState === "RESOLVED") outcomeQualityBase = 88;
-  else if (params.evidence.finalOutcomeState === "ESCALATED") outcomeQualityBase = params.evidence.validRedirect ? 76 : 28;
-  else if (params.evidence.finalOutcomeState === "PARTIALLY_RESOLVED") outcomeQualityBase = 34;
-  else if (params.evidence.finalOutcomeState === "ABANDONED") outcomeQualityBase = 10;
-  else if (params.evidence.finalOutcomeState === "TIMED_OUT") outcomeQualityBase = 6;
+  const ownershipAccountability = clampScore(
+    (average([
+      params.categoryScores.ownership,
+      params.categoryScores.closing_control,
+    ]) * 10)
+      + (params.evidence.acceptedNextStep ? 8 : 0)
+      + (params.evidence.validRedirect ? 8 : 0)
+      + (params.evidence.realNextStep ? 6 : -10)
+      - (params.evidence.avoidantRate >= 0.5 ? 12 : 0),
+    0,
+    100,
+  );
 
-  const outcomeQuality = clampScore(
-    outcomeQualityBase
+  const problemSolvingPolicy = clampScore(
+    (average([
+      params.categoryScores.policy_accuracy,
+      params.categoryScores.problem_solving,
+      params.categoryScores.escalation_judgment,
+    ]) * 10)
+      + (params.evidence.policyGroundedRate >= 0.6 ? 8 : params.evidence.policyGroundedRate >= 0.34 ? 2 : -8)
+      + (params.evidence.solvedOrRedirected ? 8 : -6)
+      + (params.evidence.validRedirect ? 6 : 0),
+    0,
+    100,
+  );
+
+  const clarityExpectationSetting = clampScore(
+    (average([
+      params.categoryScores.clarity_directness,
+      params.categoryScores.ownership,
+      params.categoryScores.closing_control,
+    ]) * 10)
+      + (params.evidence.addressedConcernRate >= 0.6 ? 6 : -6)
+      + (params.evidence.realNextStepRate >= 0.4 ? 8 : -8)
+      + (params.evidence.acceptedNextStep ? 6 : 0)
+      - (params.evidence.avoidantRate >= 0.5 ? 10 : 0),
+    0,
+    100,
+  );
+
+  let resolutionControlBase = 18;
+  if (params.evidence.finalOutcomeState === "RESOLVED") resolutionControlBase = 88;
+  else if (params.evidence.finalOutcomeState === "ESCALATED") resolutionControlBase = params.evidence.validRedirect ? 78 : 26;
+  else if (params.evidence.finalOutcomeState === "PARTIALLY_RESOLVED") resolutionControlBase = 34;
+  else if (params.evidence.finalOutcomeState === "ABANDONED") resolutionControlBase = 10;
+  else if (params.evidence.finalOutcomeState === "TIMED_OUT") resolutionControlBase = 6;
+
+  const resolutionControl = clampScore(
+    resolutionControlBase
       + (params.evidence.acceptedNextStep ? 6 : 0)
       + (params.evidence.validRedirect ? 6 : 0)
       + (params.evidence.customerImproved ? 4 : -4)
@@ -344,9 +412,12 @@ export function deriveScoreDimensions(params: {
   );
 
   return {
-    interaction_quality: interactionQuality,
-    operational_effectiveness: operationalEffectiveness,
-    outcome_quality: outcomeQuality,
+    member_connection: memberConnection,
+    listening_discovery: listeningDiscovery,
+    ownership_accountability: ownershipAccountability,
+    problem_solving_policy: problemSolvingPolicy,
+    clarity_expectation_setting: clarityExpectationSetting,
+    resolution_control: resolutionControl,
   } satisfies EvaluationResult["score_dimensions"];
 }
 
@@ -425,20 +496,115 @@ export function gateCategoryScores(params: {
   });
 }
 
-function calculateOverallScore(params: {
-  scoreDimensions: EvaluationResult["score_dimensions"];
+function findPenaltyRule(rubric: EvaluationResult["score_rubric"], key: string) {
+  return rubric.hard_penalties.find((penalty) => penalty.key === key);
+}
+
+function applyPenaltyRule(params: {
+  scoreDimensions: ScoreDimensions;
+  overallCap: number;
+  appliedPenaltyKeys: string[];
+  rubric: EvaluationResult["score_rubric"];
+  key: string;
+}) {
+  const penalty = findPenaltyRule(params.rubric, params.key);
+  if (!penalty) {
+    return params;
+  }
+
+  const adjusted = { ...params.scoreDimensions };
+  if (penalty.dimension_caps) {
+    for (const [dimensionKey, cap] of Object.entries(penalty.dimension_caps)) {
+      if (typeof cap === "number" && dimensionKey in adjusted) {
+        adjusted[dimensionKey as keyof typeof adjusted] = Math.min(adjusted[dimensionKey as keyof typeof adjusted], cap);
+      }
+    }
+  }
+
+  return {
+    scoreDimensions: adjusted,
+    overallCap: penalty.overall_cap !== undefined ? Math.min(params.overallCap, penalty.overall_cap) : params.overallCap,
+    appliedPenaltyKeys: [...params.appliedPenaltyKeys, params.key],
+  };
+}
+
+function applyRubricPenaltyCaps(params: {
+  scoreDimensions: ScoreDimensions;
+  evidence: OutcomeEvidence;
+  rubric: EvaluationResult["score_rubric"];
+}) {
+  let adjusted = {
+    ...params.scoreDimensions,
+  };
+  let overallCap = 100;
+  const appliedPenaltyKeys: string[] = [];
+
+  if (params.evidence.criticalFailureDetected) {
+    const result = applyPenaltyRule({
+      scoreDimensions: adjusted,
+      overallCap,
+      appliedPenaltyKeys,
+      rubric: params.rubric,
+      key: "critical_failure",
+    });
+    adjusted = result.scoreDimensions;
+    overallCap = result.overallCap;
+    appliedPenaltyKeys.splice(0, appliedPenaltyKeys.length, ...result.appliedPenaltyKeys);
+  }
+
+  if (params.evidence.prematureClosureDetected) {
+    const result = applyPenaltyRule({
+      scoreDimensions: adjusted,
+      overallCap,
+      appliedPenaltyKeys,
+      rubric: params.rubric,
+      key: "premature_closure",
+    });
+    adjusted = result.scoreDimensions;
+    overallCap = result.overallCap;
+    appliedPenaltyKeys.splice(0, appliedPenaltyKeys.length, ...result.appliedPenaltyKeys);
+  }
+
+  if (params.evidence.noRealOwnershipDetected) {
+    const result = applyPenaltyRule({
+      scoreDimensions: adjusted,
+      overallCap,
+      appliedPenaltyKeys,
+      rubric: params.rubric,
+      key: "no_real_ownership",
+    });
+    adjusted = result.scoreDimensions;
+    overallCap = result.overallCap;
+    appliedPenaltyKeys.splice(0, appliedPenaltyKeys.length, ...result.appliedPenaltyKeys);
+  }
+
+  return {
+    scoreDimensions: adjusted,
+    overallCap,
+    appliedPenaltyKeys,
+  };
+}
+
+export function calculateOverallScore(params: {
+  scoreDimensions: ScoreDimensions;
   rubric?: EvaluationResult["score_rubric"];
+  overallCap?: number;
 }) {
   const rubric = params.rubric || DEFAULT_EVALUATION_RUBRIC;
-  return clampScore(
+  const weightedScore = clampScore(
     Math.round(
-      params.scoreDimensions.interaction_quality * (rubric.dimension_weights.interaction_quality / 100)
-      + params.scoreDimensions.operational_effectiveness * (rubric.dimension_weights.operational_effectiveness / 100)
-      + params.scoreDimensions.outcome_quality * (rubric.dimension_weights.outcome_quality / 100),
+      params.scoreDimensions.member_connection * (rubric.dimension_weights.member_connection / 100)
+      + params.scoreDimensions.listening_discovery * (rubric.dimension_weights.listening_discovery / 100)
+      + params.scoreDimensions.ownership_accountability * (rubric.dimension_weights.ownership_accountability / 100)
+      + params.scoreDimensions.problem_solving_policy * (rubric.dimension_weights.problem_solving_policy / 100)
+      + params.scoreDimensions.clarity_expectation_setting * (rubric.dimension_weights.clarity_expectation_setting / 100)
+      + params.scoreDimensions.resolution_control * (rubric.dimension_weights.resolution_control / 100),
     ),
     0,
     100,
   );
+
+  return params.overallCap !== undefined ? Math.min(weightedScore, params.overallCap) : weightedScore;
 }
 
 export function finalizeEvaluationFromEvidence(params: {
@@ -461,14 +627,20 @@ export function finalizeEvaluationFromEvidence(params: {
     categoryScores: weightedCategoryScores,
     evidence,
   });
-  const scoreDimensions = deriveScoreDimensions({
+  const ungatedScoreDimensions = deriveScoreDimensions({
     categoryScores,
     evidence,
   });
   const scoreRubric = params.rubric || params.rawEvaluation.score_rubric || DEFAULT_EVALUATION_RUBRIC;
+  const { scoreDimensions, overallCap, appliedPenaltyKeys } = applyRubricPenaltyCaps({
+    scoreDimensions: ungatedScoreDimensions,
+    evidence,
+    rubric: scoreRubric,
+  });
   const overallScore = calculateOverallScore({
     scoreDimensions,
     rubric: scoreRubric,
+    overallCap,
   });
   const passFail = overallScore >= 80 ? "pass" : overallScore >= 65 ? "borderline" : "fail";
   const readiness = overallScore >= 85 ? "independent" : overallScore >= 75 ? "partially_independent" : overallScore >= 60 ? "shadow_ready" : "practice_more";
@@ -497,12 +669,16 @@ export function finalizeEvaluationFromEvidence(params: {
     category_scores: categoryScores,
     score_dimensions: scoreDimensions,
     score_rubric: scoreRubric,
+    applied_rubric_penalties: Array.from(new Set([
+      ...(params.rawEvaluation.applied_rubric_penalties || []),
+      ...appliedPenaltyKeys,
+    ])),
     best_moments: bestMoments,
     missed_moments: missedMoments,
     most_important_correction:
       missedMoments[0]
       || params.rawEvaluation.most_important_correction
       || `Keep the conversation grounded in the real outcome for ${getScenarioGoal(params.scenarioJson).title}.`,
-    summary: `${params.rawEvaluation.summary} Final outcome: ${evidence.finalOutcomeState}. Outcome quality was weighted heavily in the final score.`,
+    summary: `${params.rawEvaluation.summary} Final outcome: ${evidence.finalOutcomeState}. Resolution control and clear ownership carried the most weight in the final score.`,
   });
 }

@@ -14,6 +14,10 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { departmentLabels, familyLabels } from "@/features/simulator/config";
 import { buildPostCallDebrief } from "@/features/simulator/debrief";
+import {
+  getEvaluationDimensionEntries,
+  normalizeEvaluationRubric,
+} from "@shared/evaluation-rubric";
 
 function parseJson<T>(value: unknown, fallback: T): T {
   try {
@@ -143,6 +147,13 @@ export default function SessionDetail() {
   const managerDebrief = parseJson<any>(s.managerDebrief, {});
   const categoryScores = evaluation.category_scores || s.categoryScores || {};
   const scoreDimensions = (evaluation.score_dimensions || null) as Record<string, number> | null;
+  const scoreRubric = normalizeEvaluationRubric(evaluation.score_rubric);
+  const scoreDimensionEntries = scoreDimensions
+    ? getEvaluationDimensionEntries({ scoreDimensions, rubric: scoreRubric })
+    : [];
+  const appliedPenaltyLabels = (evaluation.applied_rubric_penalties || [])
+    .map((key: string) => scoreRubric.hard_penalties.find((penalty) => penalty.key === key)?.label)
+    .filter((label: string | undefined): label is string => Boolean(label));
   const mediaItems = media.data || [];
   const reviewHistory = reviews.data || [];
   const readinessStatus = profile.data?.readinessStatus || s.readinessSignal || "not_ready";
@@ -512,22 +523,35 @@ export default function SessionDetail() {
             <Card className="bg-card border-border">
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">
-                  Outcome vs Interaction
+                  Member Service Scorecard
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <p className="text-sm text-muted-foreground">{debrief.interactionVsOutcomeNote}</p>
                 <div className="grid gap-3 lg:grid-cols-3">
-                  {Object.entries(scoreDimensions).map(([key, value]) => (
-                    <div key={key} className="rounded-lg border border-border p-3">
-                      <div className="text-xs text-muted-foreground capitalize">{key.replace(/_/g, " ")}</div>
-                      <div className="mt-1 font-mono text-lg">{value}/100</div>
+                  {scoreDimensionEntries.map((entry) => (
+                    <div key={entry.key} className="rounded-lg border border-border p-3">
+                      <div className="text-xs text-muted-foreground">{entry.label}</div>
+                      <div className="mt-1 font-mono text-lg">{entry.score}/100</div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">Weight {entry.weight}%</div>
                       <div className="mt-2">
-                        <Progress value={value} className="h-2" />
+                        <Progress value={entry.score} className="h-2" />
                       </div>
                     </div>
                   ))}
                 </div>
+                {appliedPenaltyLabels.length > 0 && (
+                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-sm text-muted-foreground">
+                    <div className="text-[11px] font-mono uppercase tracking-wider text-amber-400 mb-2">
+                      Rubric caps applied
+                    </div>
+                    <div className="space-y-1">
+                      {appliedPenaltyLabels.map((label: string) => (
+                        <div key={label}>{label}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {debrief.polishedButUnresolved && (
                   <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-sm text-amber-300">
                     This session sounded more polished than it was operationally complete.

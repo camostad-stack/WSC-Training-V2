@@ -7,6 +7,11 @@ import { CheckCircle, XCircle, AlertTriangle, ArrowRight, RotateCcw, ChevronDown
 import { useState } from "react";
 import { familyLabels } from "@/features/simulator/config";
 import { buildPostCallDebrief } from "@/features/simulator/debrief";
+import {
+  getEvaluationDimensionEntries,
+  getEvaluationOverallBand,
+  normalizeEvaluationRubric,
+} from "@shared/evaluation-rubric";
 
 const passColors: Record<string, { bg: string; text: string; icon: any }> = {
   pass: { bg: "bg-green-500/10", text: "text-green-400", icon: CheckCircle },
@@ -35,27 +40,6 @@ const categoryLabels: Record<string, string> = {
   closing_control: "Closing Control",
 };
 
-const scoreDimensionLabels: Record<string, string> = {
-  interaction_quality: "Interaction Quality",
-  operational_effectiveness: "Operational Effectiveness",
-  outcome_quality: "Outcome Quality",
-};
-
-const scoreDimensionDescriptions: Record<string, { description: string; weight: string }> = {
-  interaction_quality: {
-    description: "How well you communicated, listened, and handled the customer moment to moment.",
-    weight: "20",
-  },
-  operational_effectiveness: {
-    description: "How clearly you explained the issue, set expectations, and moved the situation forward.",
-    weight: "25",
-  },
-  outcome_quality: {
-    description: "Whether the issue actually landed in a clean result, valid redirect, or usable next step.",
-    weight: "55",
-  },
-};
-
 export default function SessionResults() {
   const [, setLocation] = useLocation();
   const { config, evaluation, coaching, managerDebrief, saveStatus, savedSessionId, setConfig, stateHistory } = useSimulator();
@@ -68,14 +52,20 @@ export default function SessionResults() {
   const score = evaluation.overall_score || 0;
   const categories = evaluation.category_scores || {};
   const scoreDimensions = evaluation.score_dimensions || null;
-  const scoreRubric = evaluation.score_rubric || {
-    name: "Outcome Weighted",
-    dimension_weights: {
-      interaction_quality: 20,
-      operational_effectiveness: 25,
-      outcome_quality: 55,
-    },
-  };
+  const scoreRubric = normalizeEvaluationRubric(evaluation.score_rubric);
+  const scoreDimensionEntries = scoreDimensions
+    ? getEvaluationDimensionEntries({
+      scoreDimensions,
+      rubric: scoreRubric,
+    })
+    : [];
+  const rubricBand = getEvaluationOverallBand({
+    overallScore: score,
+    rubric: scoreRubric,
+  });
+  const appliedPenaltyLabels = (evaluation.applied_rubric_penalties || [])
+    .map((key) => scoreRubric.hard_penalties.find((penalty) => penalty.key === key)?.label)
+    .filter((label): label is string => Boolean(label));
   const debrief = buildPostCallDebrief({
     stateHistory,
     evaluation,
@@ -108,9 +98,14 @@ export default function SessionResults() {
             <PfIcon className={`h-5 w-5 ${pf.text}`} />
             <span className={`font-semibold text-lg ${pf.text} uppercase`}>{evaluation.pass_fail}</span>
           </div>
-          <Badge variant="outline" className="text-xs border-border font-mono">
-            {readinessLabels[evaluation.readiness_signal] || evaluation.readiness_signal}
-          </Badge>
+          <div className="flex items-center justify-center gap-2 flex-wrap">
+            <Badge variant="outline" className="text-xs border-border font-mono">
+              {readinessLabels[evaluation.readiness_signal] || evaluation.readiness_signal}
+            </Badge>
+            <Badge variant="outline" className="text-xs border-border font-mono">
+              {rubricBand.label}
+            </Badge>
+          </div>
         </div>
 
         <div className={`panel p-4 ${
@@ -136,60 +131,66 @@ export default function SessionResults() {
           <div className="panel p-4">
             <div className="flex items-start justify-between gap-3 mb-3">
               <div>
-                <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase">Score Dimensions</div>
+                <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase">Call Scorecard</div>
                 <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                  Your final score is split into three parts so a warm conversation without a real outcome does not
-                  score too well.
+                  This rubric scores the call the way a real member-service leader would: connect with the member,
+                  understand the issue, own the next step, explain it clearly, and land a usable outcome.
                 </p>
               </div>
-              <Badge variant="outline" className="text-[10px] font-mono border-border shrink-0">
+              <Badge variant="outline" className="text-[10px] font-mono border-border max-w-[11rem] shrink whitespace-normal text-center leading-snug">
                 {scoreRubric.name}
               </Badge>
             </div>
             <div className="space-y-3">
-              {Object.entries(scoreDimensions).map(([key, value]) => (
-                <div key={key} className="rounded-xl border border-border bg-background/40 p-3">
-                  {(() => {
-                    const rubricWeight = scoreRubric.dimension_weights?.[key as keyof typeof scoreRubric.dimension_weights];
-                    return (
-                      <>
+              {scoreDimensionEntries.map((entry) => (
+                <div key={entry.key} className="rounded-xl border border-border bg-background/40 p-3">
                   <div className="flex justify-between items-start gap-3 text-xs mb-2">
                     <div>
-                      <div className="text-foreground font-medium">{scoreDimensionLabels[key] || key}</div>
+                      <div className="text-foreground font-medium">{entry.label}</div>
                       <div className="mt-1 text-muted-foreground leading-relaxed">
-                        {scoreDimensionDescriptions[key]?.description || "Scored from the evidence in your session."}
+                        {entry.description}
                       </div>
                     </div>
                     <div className="text-right shrink-0">
-                      <div className="font-mono text-foreground">{value}/100</div>
+                      <div className="font-mono text-foreground">{entry.score}/100</div>
                       <div className="text-[10px] text-muted-foreground font-mono">
-                        Weight {rubricWeight ?? scoreDimensionDescriptions[key]?.weight ?? "--"}%
+                        Weight {entry.weight}%
                       </div>
                     </div>
                   </div>
                   <div className="mb-2">
-                    <Progress value={value} className="h-2" />
+                    <Progress value={entry.score} className="h-2" />
                   </div>
                   <div className="text-[11px] text-muted-foreground">
-                    {key === "outcome_quality"
-                      ? "This score stays low if there was no real resolution, accepted next step, or valid handoff."
-                      : key === "operational_effectiveness"
-                        ? "This score reflects whether you moved the issue forward in a practical, usable way."
-                        : "This score reflects the quality of your customer handling and communication."}
+                    {entry.why_it_matters}
                   </div>
-                      </>
-                    );
-                  })()}
                 </div>
               ))}
             </div>
+            {appliedPenaltyLabels.length > 0 && (
+              <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
+                <div className="text-[11px] font-mono text-amber-400 uppercase tracking-wider mb-1">
+                  Rubric Caps Applied
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  This score was intentionally capped because the call hit one or more non-negotiable service failures.
+                </p>
+                <ul className="mt-2 space-y-1.5 text-xs text-muted-foreground">
+                  {appliedPenaltyLabels.map((label) => (
+                    <li key={label} className="flex items-start gap-2">
+                      <AlertTriangle className="h-3.5 w-3.5 text-amber-400 mt-0.5 shrink-0" />
+                      <span>{label}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="mt-3 rounded-xl border border-border bg-background/40 p-3">
               <div className="text-[11px] font-mono text-muted-foreground uppercase tracking-wider mb-1">
-                Why This Matters
+                How To Read This
               </div>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                Outcome quality is weighted most heavily, so a warm conversation without a real resolution or valid
-                redirect will still score lower overall.
+                {scoreRubric.summary}
               </p>
             </div>
           </div>
@@ -197,12 +198,12 @@ export default function SessionResults() {
 
         <div className="panel p-4">
           <div className="flex items-start justify-between gap-3 mb-3">
-            <div>
-              <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase">Outcome Review</div>
-              <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                This is the after-call read on whether the issue actually landed, not just whether the conversation felt calm.
-              </p>
-            </div>
+              <div>
+                <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase">Outcome Review</div>
+                <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                  This is the operational read on whether the member actually left with a workable path, not just a calmer tone.
+                </p>
+              </div>
             <Badge
               variant="outline"
               className={`text-[10px] font-mono border-0 ${
@@ -424,7 +425,7 @@ export default function SessionResults() {
         {/* Strengths */}
         {(evaluation.best_moments || []).length > 0 && (
           <div className="panel p-4">
-            <div className="text-xs font-mono text-green-400 tracking-wider uppercase mb-2">Strengths</div>
+            <div className="text-xs font-mono text-green-400 tracking-wider uppercase mb-2">What Helped You</div>
             <ul className="space-y-1.5">
               {(evaluation.best_moments || []).map((s: string, i: number) => (
                 <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
@@ -439,7 +440,7 @@ export default function SessionResults() {
         {/* Misses */}
         {(evaluation.missed_moments || []).length > 0 && (
           <div className="panel p-4">
-            <div className="text-xs font-mono text-amber-400 tracking-wider uppercase mb-2">Misses</div>
+            <div className="text-xs font-mono text-amber-400 tracking-wider uppercase mb-2">What Cost You</div>
             <ul className="space-y-1.5">
               {(evaluation.missed_moments || []).map((s: string, i: number) => (
                 <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
@@ -468,7 +469,7 @@ export default function SessionResults() {
         {/* Coaching: Do This Next Time */}
         {coaching?.do_this_next_time && coaching.do_this_next_time.length > 0 && (
           <div className="panel p-4">
-            <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase mb-2">Do This Next Time</div>
+            <div className="text-xs font-mono text-muted-foreground tracking-wider uppercase mb-2">Next Rep</div>
             <ul className="space-y-1.5">
               {coaching.do_this_next_time.map((item: string, i: number) => (
                 <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">

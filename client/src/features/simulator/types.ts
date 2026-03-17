@@ -343,19 +343,34 @@ export interface EvaluationResult {
   pass_fail: string;
   readiness_signal: string;
   category_scores: Record<string, number>;
-  score_dimensions?: {
-    interaction_quality: number;
-    operational_effectiveness: number;
-    outcome_quality: number;
-  };
+  score_dimensions?: Record<string, number>;
   score_rubric?: {
     name: string;
-    dimension_weights: {
-      interaction_quality: number;
-      operational_effectiveness: number;
-      outcome_quality: number;
-    };
+    summary: string;
+    dimension_order: string[];
+    dimension_weights: Record<string, number>;
+    dimension_meta: Record<string, {
+      label: string;
+      description: string;
+      why_it_matters: string;
+    }>;
+    overall_bands: Array<{
+      key: string;
+      label: string;
+      min: number;
+      max: number;
+      summary: string;
+    }>;
+    hard_penalties: Array<{
+      key: string;
+      label: string;
+      description: string;
+      overall_cap?: number;
+      dimension_caps?: Record<string, number>;
+    }>;
+    competency_signals: string[];
   };
+  applied_rubric_penalties?: string[];
   best_moments: string[];
   missed_moments: string[];
   critical_mistakes: string[];

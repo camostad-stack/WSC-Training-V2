@@ -1,5 +1,14 @@
 import { z } from "zod";
 import {
+  DEFAULT_EVALUATION_RUBRIC,
+  EVALUATION_DIMENSION_ORDER,
+  normalizeEvaluationRubric,
+  normalizeEvaluationScoreDimensions,
+} from "../../../shared/evaluation-rubric";
+import {
+  normalizeLongitudinalProfile,
+} from "../../../shared/longitudinal-profile";
+import {
   adaptiveDifficultySchema as adaptiveDifficultyResponseFormat,
   customerReplySchema as customerReplyResponseFormat,
   employeeCoachSchema as employeeCoachResponseFormat,
@@ -454,17 +463,81 @@ export const evaluationCategoryScoresSchema = z.object({
   closing_control: value.closing_control ?? 0,
 }));
 
-export const evaluationScoreRubricSchema = z.object({
-  name: z.string().trim().min(1).default("Outcome Weighted"),
+const evaluationDimensionCapsSchema = z.object({
+  member_connection: z.number().int().min(0).max(100).optional(),
+  listening_discovery: z.number().int().min(0).max(100).optional(),
+  ownership_accountability: z.number().int().min(0).max(100).optional(),
+  problem_solving_policy: z.number().int().min(0).max(100).optional(),
+  clarity_expectation_setting: z.number().int().min(0).max(100).optional(),
+  resolution_control: z.number().int().min(0).max(100).optional(),
+}).default({});
+
+const evaluationScoreRubricBaseSchema = z.object({
+  name: z.string().trim().min(1),
+  summary: z.string().trim().min(1),
+  dimension_order: z.array(z.enum(EVALUATION_DIMENSION_ORDER)).length(EVALUATION_DIMENSION_ORDER.length),
   dimension_weights: z.object({
-    interaction_quality: z.number().int().min(0).max(100).default(20),
-    operational_effectiveness: z.number().int().min(0).max(100).default(25),
-    outcome_quality: z.number().int().min(0).max(100).default(55),
+    member_connection: z.number().int().min(0).max(100),
+    listening_discovery: z.number().int().min(0).max(100),
+    ownership_accountability: z.number().int().min(0).max(100),
+    problem_solving_policy: z.number().int().min(0).max(100),
+    clarity_expectation_setting: z.number().int().min(0).max(100),
+    resolution_control: z.number().int().min(0).max(100),
   }),
+  dimension_meta: z.object({
+    member_connection: z.object({
+      label: z.string().trim().min(1),
+      description: z.string().trim().min(1),
+      why_it_matters: z.string().trim().min(1),
+    }),
+    listening_discovery: z.object({
+      label: z.string().trim().min(1),
+      description: z.string().trim().min(1),
+      why_it_matters: z.string().trim().min(1),
+    }),
+    ownership_accountability: z.object({
+      label: z.string().trim().min(1),
+      description: z.string().trim().min(1),
+      why_it_matters: z.string().trim().min(1),
+    }),
+    problem_solving_policy: z.object({
+      label: z.string().trim().min(1),
+      description: z.string().trim().min(1),
+      why_it_matters: z.string().trim().min(1),
+    }),
+    clarity_expectation_setting: z.object({
+      label: z.string().trim().min(1),
+      description: z.string().trim().min(1),
+      why_it_matters: z.string().trim().min(1),
+    }),
+    resolution_control: z.object({
+      label: z.string().trim().min(1),
+      description: z.string().trim().min(1),
+      why_it_matters: z.string().trim().min(1),
+    }),
+  }),
+  overall_bands: z.array(z.object({
+    key: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    min: z.number().int().min(0).max(100),
+    max: z.number().int().min(0).max(100),
+    summary: z.string().trim().min(1),
+  })).min(1),
+  hard_penalties: z.array(z.object({
+    key: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    description: z.string().trim().min(1),
+    overall_cap: z.number().int().min(0).max(100).optional(),
+    dimension_caps: evaluationDimensionCapsSchema.optional(),
+  })).default([]),
+  competency_signals: z.array(z.string().trim().min(1)).default([]),
 }).superRefine((value, ctx) => {
-  const total = value.dimension_weights.interaction_quality
-    + value.dimension_weights.operational_effectiveness
-    + value.dimension_weights.outcome_quality;
+  const total = value.dimension_weights.member_connection
+    + value.dimension_weights.listening_discovery
+    + value.dimension_weights.ownership_accountability
+    + value.dimension_weights.problem_solving_policy
+    + value.dimension_weights.clarity_expectation_setting
+    + value.dimension_weights.resolution_control;
 
   if (total !== 100) {
     ctx.addIssue({
@@ -475,24 +548,31 @@ export const evaluationScoreRubricSchema = z.object({
   }
 });
 
+export const evaluationScoreRubricSchema = z.preprocess(
+  value => normalizeEvaluationRubric(value),
+  evaluationScoreRubricBaseSchema,
+);
+
+const evaluationScoreDimensionsSchema = z.preprocess(
+  value => normalizeEvaluationScoreDimensions(value),
+  z.object({
+    member_connection: z.number().int().min(0).max(100),
+    listening_discovery: z.number().int().min(0).max(100),
+    ownership_accountability: z.number().int().min(0).max(100),
+    problem_solving_policy: z.number().int().min(0).max(100),
+    clarity_expectation_setting: z.number().int().min(0).max(100),
+    resolution_control: z.number().int().min(0).max(100),
+  }),
+);
+
 export const evaluationResultSchema = z.object({
   overall_score: z.number().int().min(0).max(100),
   pass_fail: z.string().trim().min(1),
   readiness_signal: z.string().trim().min(1),
   category_scores: evaluationCategoryScoresSchema,
-  score_dimensions: z.object({
-    interaction_quality: z.number().int().min(0).max(100),
-    operational_effectiveness: z.number().int().min(0).max(100),
-    outcome_quality: z.number().int().min(0).max(100),
-  }),
-  score_rubric: evaluationScoreRubricSchema.default({
-    name: "Outcome Weighted",
-    dimension_weights: {
-      interaction_quality: 20,
-      operational_effectiveness: 25,
-      outcome_quality: 55,
-    },
-  }),
+  score_dimensions: evaluationScoreDimensionsSchema.optional(),
+  score_rubric: evaluationScoreRubricSchema.default(DEFAULT_EVALUATION_RUBRIC),
+  applied_rubric_penalties: z.array(z.string()).default([]),
   best_moments: z.array(z.string()).default([]),
   missed_moments: z.array(z.string()).default([]),
   critical_mistakes: z.array(z.string()).default([]),
@@ -506,6 +586,36 @@ const replacementPhraseSchema = z.union([
   z.string(),
   z.object({ original: z.string(), better: z.string() }).transform(value => value.better),
 ]);
+
+const longitudinalCompetencySignalSchema = z.object({
+  score: z.number().int().min(0).max(100),
+  trend: z.enum(["up", "steady", "down"]),
+  summary: z.string().trim().min(1),
+});
+
+const longitudinalProfileSchema = z.preprocess(
+  value => normalizeLongitudinalProfile(value),
+  z.object({
+    framework_name: z.string().trim().min(1),
+    summary: z.string().trim().min(1),
+    stage_level: z.number().int().min(1).max(7),
+    stage_label: z.string().trim().min(1),
+    stage_summary: z.string().trim().min(1),
+    confidence: z.enum(["emerging", "developing", "established"]),
+    evidence_window_sessions: z.number().int().min(0),
+    competencies: z.object({
+      business_operations: longitudinalCompetencySignalSchema,
+      drive_self_motivation: longitudinalCompetencySignalSchema,
+      reliability_consistency: longitudinalCompetencySignalSchema,
+      proactivity_initiative: longitudinalCompetencySignalSchema,
+      work_ethic: longitudinalCompetencySignalSchema,
+      problem_solving_adaptability: longitudinalCompetencySignalSchema,
+      community_builder: longitudinalCompetencySignalSchema,
+    }),
+    development_priorities: z.array(z.string().trim().min(1)).default([]),
+    manager_observation_focus: z.array(z.string().trim().min(1)).default([]),
+  }),
+);
 
 export const coachingResultSchema = z.object({
   employee_coaching_summary: z.string().default(""),
@@ -547,6 +657,7 @@ export const profileUpdateResultSchema = z.object({
   consistency_score: z.number().int().min(0).max(100),
   recommended_next_steps: z.array(z.string()).default([]),
   manager_attention_flag: z.boolean(),
+  longitudinal_profile: longitudinalProfileSchema,
 });
 
 export const adaptiveDifficultyResultSchema = z.object({

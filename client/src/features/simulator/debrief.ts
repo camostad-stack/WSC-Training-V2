@@ -1,3 +1,7 @@
+import {
+  getInteractionCoverageScore,
+  getResolutionControlScore,
+} from "@shared/evaluation-rubric";
 import type {
   CoachingNote,
   EvaluationResult,
@@ -404,8 +408,8 @@ export function buildPostCallDebrief(params: {
   const hasValidNextStep = Boolean(finalState?.accepted_next_step || finalState?.valid_redirect);
   const polishedButUnresolved = Boolean(
     params.evaluation?.score_dimensions
-    && params.evaluation.score_dimensions.interaction_quality >= 70
-    && params.evaluation.score_dimensions.outcome_quality <= 55
+    && getInteractionCoverageScore(params.evaluation.score_dimensions) >= 70
+    && getResolutionControlScore(params.evaluation.score_dimensions) <= 55
     && !isActuallyResolved
     && !escalationWasValid,
   );

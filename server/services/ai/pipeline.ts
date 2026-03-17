@@ -40,11 +40,24 @@ import {
   DEFAULT_EVALUATION_RUBRIC,
   applyScenarioPriorityWeights,
   buildStateHistoryEvidence,
+  calculateOverallScore,
   deriveScoreDimensions,
   finalizeEvaluationFromEvidence,
   gateCategoryScores,
   getScenarioPriorityProfile,
 } from "./scoring";
+import { getZeroEvaluationScoreDimensions, normalizeEvaluationScoreDimensions } from "../../../shared/evaluation-rubric";
+import {
+  deriveLegacyLongitudinalProfileFallback,
+  getLongitudinalStageDefinition,
+  getLongitudinalStageLevelFromScore,
+  LONGITUDINAL_COMPETENCY_META,
+  LONGITUDINAL_COMPETENCY_ORDER,
+  normalizeLongitudinalProfile,
+  type LongitudinalCompetencyKey,
+  type LongitudinalGrowthProfile,
+  type LongitudinalTrend,
+} from "../../../shared/longitudinal-profile";
 import { selectRelevantPolicies } from "../policy-matching";
 import {
   buildDefaultConversationState,
@@ -811,15 +824,10 @@ function buildLocalEvaluation(params: {
     evidence,
   });
   const scoreDimensions = deriveScoreDimensions({ categoryScores, evidence });
-  const overallScore = clampScore(
-    Math.round(
-      scoreDimensions.interaction_quality * 0.20
-      + scoreDimensions.operational_effectiveness * 0.25
-      + scoreDimensions.outcome_quality * 0.55,
-    ),
-    0,
-    100,
-  );
+  const overallScore = calculateOverallScore({
+    scoreDimensions,
+    rubric: DEFAULT_EVALUATION_RUBRIC,
+  });
   const passFail = overallScore >= 80 ? "pass" : overallScore >= 65 ? "borderline" : "fail";
   const readiness = overallScore >= 85 ? "independent" : overallScore >= 75 ? "partially_independent" : overallScore >= 60 ? "shadow_ready" : "practice_more";
   const bestMoments = [
@@ -852,9 +860,10 @@ function buildLocalEvaluation(params: {
     overall_score: overallScore,
     pass_fail: passFail,
     readiness_signal: readiness,
-    category_scores: categoryScores,
+    category_scores: baseCategoryScores,
     score_dimensions: scoreDimensions,
     score_rubric: DEFAULT_EVALUATION_RUBRIC,
+    applied_rubric_penalties: [],
     best_moments: bestMoments,
     missed_moments: missedMoments,
     critical_mistakes: criticalCount > 0 ? ["Used language that would escalate or abandon the issue."] : [],
@@ -923,6 +932,25 @@ function buildLocalProfileUpdate(params: { currentProfile: any; sessionBundle: a
   const evaluation = params.sessionBundle?.evaluation || {};
   const overallScore = typeof evaluation.overall_score === "number" ? evaluation.overall_score : 65;
   const categoryScores = evaluation.category_scores || {};
+  const scoreDimensions = normalizeEvaluationScoreDimensions(evaluation.score_dimensions);
+  const priorLongitudinalProfile = params.currentProfile?.longitudinal_profile
+    ? normalizeLongitudinalProfile(params.currentProfile.longitudinal_profile)
+    : deriveLegacyLongitudinalProfileFallback({
+      levelEstimate: params.currentProfile?.level_estimate,
+      totalSessions: params.currentProfile?.total_sessions,
+      consistencyScore: params.currentProfile?.consistency_score,
+      skillMap: params.currentProfile?.skill_map,
+    });
+  const nextEvidenceWindow = Math.max(1, (params.currentProfile?.total_sessions || 0) + 1);
+  const longitudinalProfile = buildLocalLongitudinalProfile({
+    overallScore,
+    scoreDimensions,
+    priorProfile: priorLongitudinalProfile,
+    evidenceWindowSessions: nextEvidenceWindow,
+  });
+  const developmentPriorityLabels = longitudinalProfile.development_priorities.length > 0
+    ? longitudinalProfile.development_priorities
+    : ["Ownership & Accountability", "Resolution / Next-Step Control"];
 
   return profileUpdateResultSchema.parse({
     level_estimate: overallScore >= 85 ? "L4" : overallScore >= 75 ? "L3" : overallScore >= 60 ? "L2" : "L1",
@@ -941,9 +969,147 @@ function buildLocalProfileUpdate(params: { currentProfile: any; sessionBundle: a
     weakest_scenario_families: overallScore < 70 ? [params.sessionBundle?.scenario?.scenario_family].filter(Boolean) : [],
     pressure_handling: overallScore >= 75 ? "steady" : "needs repetition",
     consistency_score: Math.max(0, Math.min(100, overallScore)),
-    recommended_next_steps: ["Run another conversation in this issue family and keep the close explicit."],
+    recommended_next_steps: [
+      `Keep building ${developmentPriorityLabels[0]} through another session in this issue family.`,
+      "Use the call score to judge the single interaction and the growth profile to track repeated development over time.",
+    ],
     manager_attention_flag: overallScore < 60,
+    longitudinal_profile: longitudinalProfile,
   });
+}
+
+function buildLocalLongitudinalProfile(params: {
+  overallScore: number;
+  scoreDimensions: ReturnType<typeof normalizeEvaluationScoreDimensions>;
+  priorProfile: LongitudinalGrowthProfile;
+  evidenceWindowSessions: number;
+}): LongitudinalGrowthProfile {
+  const consistencySignal = clampLongitudinalPercent(
+    (params.priorProfile.stage_level * 8) + (params.overallScore * 0.65),
+  );
+  const rawSignals: Record<LongitudinalCompetencyKey, number> = {
+    business_operations: averageLongitudinal([
+      params.scoreDimensions.listening_discovery,
+      params.scoreDimensions.clarity_expectation_setting,
+      params.scoreDimensions.resolution_control,
+    ]),
+    drive_self_motivation: averageLongitudinal([
+      params.scoreDimensions.ownership_accountability,
+      params.scoreDimensions.problem_solving_policy,
+      consistencySignal,
+    ]),
+    reliability_consistency: averageLongitudinal([
+      params.scoreDimensions.clarity_expectation_setting,
+      params.scoreDimensions.ownership_accountability,
+      consistencySignal,
+    ]),
+    proactivity_initiative: averageLongitudinal([
+      params.scoreDimensions.ownership_accountability,
+      params.scoreDimensions.resolution_control,
+      params.scoreDimensions.problem_solving_policy,
+    ]),
+    work_ethic: averageLongitudinal([
+      consistencySignal,
+      params.scoreDimensions.ownership_accountability,
+      params.scoreDimensions.member_connection,
+    ]),
+    problem_solving_adaptability: averageLongitudinal([
+      params.scoreDimensions.problem_solving_policy,
+      params.scoreDimensions.resolution_control,
+      params.scoreDimensions.clarity_expectation_setting,
+    ]),
+    community_builder: averageLongitudinal([
+      params.scoreDimensions.member_connection,
+      params.scoreDimensions.listening_discovery,
+      params.scoreDimensions.clarity_expectation_setting,
+    ]),
+  };
+
+  const competencies = LONGITUDINAL_COMPETENCY_ORDER.reduce((result, key) => {
+    const prior = params.priorProfile.competencies[key]?.score;
+    const blended = blendLongitudinalSignal(prior, rawSignals[key]);
+    result[key] = {
+      score: blended,
+      trend: getLongitudinalTrend(prior, blended),
+      summary: buildLongitudinalSummary({
+        key,
+        score: blended,
+      }),
+    };
+    return result;
+  }, {} as LongitudinalGrowthProfile["competencies"]);
+
+  const weightedAverage = averageLongitudinal(LONGITUDINAL_COMPETENCY_ORDER.map((key) => competencies[key].score));
+  const stageDefinition = getLongitudinalStageDefinition(getLongitudinalStageLevelFromScore(weightedAverage));
+  const confidence = params.evidenceWindowSessions >= 10
+    ? "established"
+    : params.evidenceWindowSessions >= 4
+      ? "developing"
+      : "emerging";
+  const developmentPriorities = [...LONGITUDINAL_COMPETENCY_ORDER]
+    .sort((left, right) => competencies[left].score - competencies[right].score)
+    .slice(0, 3)
+    .map((key) => LONGITUDINAL_COMPETENCY_META[key].label);
+  const managerObservationFocus = LONGITUDINAL_COMPETENCY_ORDER
+    .filter((key) => LONGITUDINAL_COMPETENCY_META[key].manager_confirmation_needed)
+    .map((key) => LONGITUDINAL_COMPETENCY_META[key].label);
+
+  return normalizeLongitudinalProfile({
+    framework_name: "WSC Service Growth Profile v1",
+    summary:
+      "This profile tracks longer-term service growth across repeated sessions. It complements the call score, but it should not be treated as a one-call verdict on career readiness.",
+    stage_level: stageDefinition.stage_level,
+    stage_label: stageDefinition.stage_label,
+    stage_summary: stageDefinition.stage_summary,
+    confidence,
+    evidence_window_sessions: params.evidenceWindowSessions,
+    competencies,
+    development_priorities: developmentPriorities,
+    manager_observation_focus: managerObservationFocus,
+  });
+}
+
+function blendLongitudinalSignal(previousScore: number | undefined, currentScore: number) {
+  if (previousScore === undefined) return clampLongitudinalPercent(currentScore);
+  return clampLongitudinalPercent((previousScore * 0.65) + (currentScore * 0.35));
+}
+
+function getLongitudinalTrend(previousScore: number | undefined, nextScore: number): LongitudinalTrend {
+  if (previousScore === undefined) return "steady";
+  if (nextScore >= previousScore + 5) return "up";
+  if (nextScore <= previousScore - 5) return "down";
+  return "steady";
+}
+
+function buildLongitudinalSummary(params: {
+  key: LongitudinalCompetencyKey;
+  score: number;
+}) {
+  const meta = LONGITUDINAL_COMPETENCY_META[params.key];
+  if (params.score >= 80) {
+    return meta.manager_confirmation_needed
+      ? "Current sessions suggest a strong longer-term signal here, but manager observation should confirm it."
+      : "Repeated practice is showing a dependable strength here.";
+  }
+
+  if (params.score >= 60) {
+    return meta.manager_confirmation_needed
+      ? "There is usable progress here, but this still needs manager observation across time."
+      : "This area is developing in a usable direction but is not fully consistent yet.";
+  }
+
+  return meta.manager_confirmation_needed
+    ? "Current evidence is still thin or inconsistent here. Manager observation should help confirm the real pattern."
+    : "This is still an active development area across repeated sessions.";
+}
+
+function clampLongitudinalPercent(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function averageLongitudinal(values: number[]) {
+  if (values.length === 0) return 0;
+  return clampLongitudinalPercent(values.reduce((sum, value) => sum + value, 0) / values.length);
 }
 
 function buildLocalAdaptiveDifficulty(params: { employeeProfile: any; recentSessions: any[] }): AdaptiveDifficultyResult {
@@ -1002,12 +1168,9 @@ function buildFailureBundle(params: {
     pass_fail: "fail",
     readiness_signal: "practice_more",
     category_scores: DEFAULT_CATEGORY_SCORES,
-    score_dimensions: {
-      interaction_quality: 0,
-      operational_effectiveness: 0,
-      outcome_quality: 0,
-    },
+    score_dimensions: getZeroEvaluationScoreDimensions(),
     score_rubric: DEFAULT_EVALUATION_RUBRIC,
+    applied_rubric_penalties: [],
     best_moments: [],
     missed_moments: [params.failure.message],
     critical_mistakes: [params.failure.code],

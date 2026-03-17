@@ -89,6 +89,22 @@ export const employeeProfiles = pgTable("employee_profiles", {
     escalation_judgment: number;
     professional_presence: number;
   }>(),
+  longitudinalProfile: jsonb("longitudinalProfile").$type<{
+    framework_name: string;
+    summary: string;
+    stage_level: number;
+    stage_label: string;
+    stage_summary: string;
+    confidence: "emerging" | "developing" | "established";
+    evidence_window_sessions: number;
+    competencies: Record<string, {
+      score: number;
+      trend: "up" | "steady" | "down";
+      summary: string;
+    }>;
+    development_priorities: string[];
+    manager_observation_focus: string[];
+  }>(),
   strongestFamilies: jsonb("strongestFamilies").$type<string[]>(),
   weakestFamilies: jsonb("weakestFamilies").$type<string[]>(),
   pressureHandling: varchar("pressureHandling", { length: 64 }),

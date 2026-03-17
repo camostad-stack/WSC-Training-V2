@@ -201,8 +201,10 @@ async function updateEmployeeProfileFromSession(
         readiness_status: currentProfile.readinessStatus,
         trend: currentProfile.trend || "flat",
         skill_map: currentProfile.skillMap || {},
+        longitudinal_profile: currentProfile.longitudinalProfile || undefined,
         total_sessions: currentProfile.totalSessions,
         average_score: currentProfile.averageScore,
+        consistency_score: currentProfile.consistencyScore,
       },
       sessionBundle: {
         scenario: input.scenarioJson,
@@ -221,6 +223,7 @@ async function updateEmployeeProfileFromSession(
       readinessStatus: normalizeProfileReadiness(profileUpdate.readiness_status) as any,
       trend: normalizeProfileTrend(profileUpdate.trend) as any,
       skillMap: profileUpdate.skill_map,
+      longitudinalProfile: profileUpdate.longitudinal_profile,
       strongestFamilies: profileUpdate.strongest_scenario_families,
       weakestFamilies: profileUpdate.weakest_scenario_families,
       pressureHandling: profileUpdate.pressure_handling,
@@ -252,6 +255,8 @@ export async function saveSimulationSession(userId: number, input: SaveSimulatio
     ...input,
     status: sessionValues.status as string | undefined,
     overallScore: (sessionValues.overallScore as number | undefined) ?? input.overallScore,
+    evaluationResult: (sessionValues.evaluationResult as typeof input.evaluationResult | undefined) ?? input.evaluationResult,
+    coachingResult: (sessionValues.coachingResult as typeof input.coachingResult | undefined) ?? input.coachingResult,
   });
 
   return { success: true, sessionId };

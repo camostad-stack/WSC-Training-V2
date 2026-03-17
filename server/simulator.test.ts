@@ -2,6 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 import { ENV } from "./_core/env";
+import { evaluationResultSchema, type StateUpdateResult } from "./services/ai/contracts";
+import {
+  applyScenarioPriorityWeights,
+  buildStateHistoryEvidence,
+  gateCategoryScores,
+} from "./services/ai/scoring";
 import { buildUtteranceAnalysisDefaults } from "./services/simulation/analysis";
 
 // Mock the LLM module
@@ -127,6 +133,110 @@ function createScenarioFixture(overrides: Record<string, unknown> = {}) {
     recommended_turns: 4,
     ...overrides,
   };
+}
+
+function clampLocalCategoryScore(value: number, min = 0, max = 10) {
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function averageLocal(values: number[]) {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function computeExpectedLocalFallbackCategoryScores(params: {
+  scenarioJson: ReturnType<typeof createScenarioFixture>;
+  transcript: Array<{ role: "customer" | "employee"; message: string }>;
+}) {
+  const emergencyResponse = params.scenarioJson.scenario_family === "emergency_response";
+  const { analyses, evidence } = buildStateHistoryEvidence({
+    scenarioJson: params.scenarioJson as any,
+    transcript: params.transcript,
+    stateHistory: [],
+  });
+  const total = Math.max(analyses.length, 1);
+  const count = (predicate: (analysis: StateUpdateResult["latest_employee_analysis"]) => boolean) => analyses.filter(predicate).length;
+  const empathyCount = count((analysis) => analysis.empathy >= 6);
+  const ownershipCount = count((analysis) => analysis.tookOwnership);
+  const directCount = count((analysis) => analysis.clarity >= 6 || analysis.directness >= 6);
+  const policyCount = count((analysis) => analysis.accuracy >= 6 && (analysis.explicitExplanation || analysis.explicitVerification));
+  const avoidantCount = count((analysis) => analysis.avoidedQuestion || analysis.deadEndLanguage || analysis.vaguenessDetected);
+  const criticalCount = count((analysis) => analysis.explicitDisrespect || analysis.accuracy <= 2);
+  const escalationCount = count((analysis) => analysis.explicitManagerMention || analysis.escalatedAppropriately);
+  const answeredCount = count((analysis) => analysis.answeredQuestion || analysis.explicitExplanation || analysis.explicitVerification || analysis.explicitDirection || analysis.explicitDiscovery);
+  const feltHeardCount = count((analysis) => analysis.madeCustomerFeelHeard);
+  const nextStepCount = count((analysis) => analysis.explicitNextStep || analysis.explicitTimeline || analysis.explicitDirection || analysis.explicitRecommendation);
+  const respectfulCount = count((analysis) => !analysis.disrespect && !analysis.soundedRude && !analysis.soundedDismissive);
+  const avg = (picker: (analysis: StateUpdateResult["latest_employee_analysis"]) => number) => averageLocal(analyses.map(picker));
+  const answeredRate = answeredCount / total;
+  const ownershipRate = ownershipCount / total;
+  const nextStepRate = nextStepCount / total;
+  const avoidantRate = avoidantCount / total;
+  const respectfulRate = respectfulCount / total;
+
+  const baseCategoryScores = evaluationResultSchema.shape.category_scores.parse({
+    opening_warmth: clampLocalCategoryScore((avg((analysis) => analysis.warmth) * 0.7) + ((empathyCount / total) * 3) - (criticalCount * 1.5)),
+    listening_empathy: clampLocalCategoryScore(
+      (avg((analysis) => analysis.empathy) * 0.45)
+      + (avg((analysis) => analysis.respectfulness) * 0.25)
+      + (answeredRate * 2.0)
+      + ((feltHeardCount / total) * 1.5)
+      - (avoidantRate * 4)
+      - (criticalCount * 1.5),
+    ),
+    clarity_directness: clampLocalCategoryScore(
+      (avg((analysis) => analysis.clarity) * 0.5)
+      + (avg((analysis) => analysis.directness) * 0.25)
+      + (avg((analysis) => analysis.explanationQuality) * 0.25)
+      - (avoidantRate * 4)
+      - (criticalCount * 1.5),
+    ),
+    policy_accuracy: clampLocalCategoryScore(
+      emergencyResponse
+        ? ((directCount + ownershipCount) / (2 * total)) * 10
+        : (policyCount / total) * 8 + (avg((analysis) => analysis.accuracy) * 0.2),
+    ),
+    ownership: clampLocalCategoryScore(
+      (avg((analysis) => analysis.ownership) * 0.55)
+      + (avg((analysis) => analysis.nextStepQuality) * 0.25)
+      + (ownershipRate * 2)
+      - (avoidantRate * 4)
+      - (criticalCount * 1.5),
+    ),
+    problem_solving: clampLocalCategoryScore(
+      (avg((analysis) => analysis.helpfulness) * 0.4)
+      + (avg((analysis) => analysis.nextStepQuality) * 0.3)
+      + (avg((analysis) => analysis.explanationQuality) * 0.2)
+      + (nextStepRate * 1.0)
+      - (avoidantRate * 4)
+      - (criticalCount * 1.5),
+    ),
+    de_escalation: clampLocalCategoryScore(
+      (avg((analysis) => analysis.empathy) * 0.25)
+      + (avg((analysis) => analysis.respectfulness) * 0.25)
+      + (avg((analysis) => analysis.helpfulness) * 0.2)
+      + (respectfulRate * 2.0)
+      - (criticalCount * 2.5),
+    ),
+    escalation_judgment: clampLocalCategoryScore((escalationCount > 0 || criticalCount === 0) ? 7 : 4),
+    visible_professionalism: clampLocalCategoryScore((avg((analysis) => analysis.professionalism) * 0.6) + (respectfulRate * 4) - criticalCount * 2.5 - avoidantCount),
+    closing_control: clampLocalCategoryScore(
+      (avg((analysis) => analysis.nextStepQuality) * 0.45)
+      + (avg((analysis) => analysis.ownership) * 0.25)
+      + (avg((analysis) => analysis.directness) * 0.15)
+      + (nextStepRate * 1.5)
+      - (avoidantRate * 4)
+      - (criticalCount * 1.5),
+    ),
+  });
+
+  return gateCategoryScores({
+    scenarioJson: params.scenarioJson as any,
+    categoryScores: evaluationResultSchema.shape.category_scores.parse(
+      applyScenarioPriorityWeights(params.scenarioJson as any, baseCategoryScores),
+    ),
+    evidence,
+  });
 }
 
 // ─── Prompt 1: Scenario Director ───
@@ -625,7 +735,7 @@ describe("simulator.evaluate", () => {
     expect(result.processingStatus).toBe("completed");
     expect(result.failure).toBeUndefined();
     expect((result.evaluation as any).overall_score).toBeGreaterThanOrEqual(0);
-    expect((result.evaluation as any).score_dimensions.outcome_quality).toBeLessThanOrEqual(30);
+    expect((result.evaluation as any).score_dimensions.resolution_control).toBeLessThanOrEqual(30);
     expect(mockInvokeLLM).not.toHaveBeenCalled();
   });
 
@@ -688,32 +798,34 @@ describe("simulator.evaluate", () => {
 
   it("uses a golf scoring and coaching lens that emphasizes opening warmth and closing control", async () => {
     const caller = appRouter.createCaller(createAuthContext());
+    const scenarioJson = createScenarioFixture({
+      department: "golf",
+      employee_role: "Golf Membership Advisor",
+      scenario_family: "value_explanation",
+      customer_persona: {
+        name: "Liam Hart",
+        age_band: "35-45",
+        membership_context: "Prospect comparing clubs",
+        communication_style: "Curious but hesitant",
+        initial_emotion: "skeptical",
+        patience_level: "moderate",
+      },
+      situation_summary: "A prospect wants to know why WSC golf is worth the cost.",
+      opening_line: "I like the club, but I need to know why this is worth it for me.",
+      hidden_facts: ["The prospect mainly needs the right fit and a confident next step."],
+      approved_resolution_paths: ["Use discovery before making the value case."],
+      required_behaviors: ["Open warmly", "Ask one discovery question", "Close with control"],
+      critical_errors: ["Launch into a generic pitch without discovery"],
+    });
+    const transcript = [
+      { role: "customer" as const, message: "I need to know why this is worth it for me." },
+      { role: "employee" as const, message: "Welcome in. What are you hoping to get out of the club most right now?" },
+      { role: "customer" as const, message: "Convenience and more regular practice time." },
+      { role: "employee" as const, message: "That helps. Based on that, the best fit is the membership that gives you flexible range access, and I can walk you through the next step today." },
+    ];
     const result = await caller.simulator.evaluate({
-      scenarioJson: createScenarioFixture({
-        department: "golf",
-        employee_role: "Golf Membership Advisor",
-        scenario_family: "value_explanation",
-        customer_persona: {
-          name: "Liam Hart",
-          age_band: "35-45",
-          membership_context: "Prospect comparing clubs",
-          communication_style: "Curious but hesitant",
-          initial_emotion: "skeptical",
-          patience_level: "moderate",
-        },
-        situation_summary: "A prospect wants to know why WSC golf is worth the cost.",
-        opening_line: "I like the club, but I need to know why this is worth it for me.",
-        hidden_facts: ["The prospect mainly needs the right fit and a confident next step."],
-        approved_resolution_paths: ["Use discovery before making the value case."],
-        required_behaviors: ["Open warmly", "Ask one discovery question", "Close with control"],
-        critical_errors: ["Launch into a generic pitch without discovery"],
-      }),
-      transcript: [
-        { role: "customer", message: "I need to know why this is worth it for me." },
-        { role: "employee", message: "Welcome in. What are you hoping to get out of the club most right now?" },
-        { role: "customer", message: "Convenience and more regular practice time." },
-        { role: "employee", message: "That helps. Based on that, the best fit is the membership that gives you flexible range access, and I can walk you through the next step today." },
-      ],
+      scenarioJson,
+      transcript,
       employeeRole: "Golf Membership Advisor",
     }) as any;
 
@@ -722,6 +834,12 @@ describe("simulator.evaluate", () => {
     expect(result.coaching.do_this_next_time[0]).toContain("Open warmer");
     expect(result.coaching.replacement_phrases[0]).toContain("Welcome in");
     expect(result.evaluation.ideal_response_example).toContain("best fit");
+    expect(result.evaluation.category_scores).toEqual(
+      computeExpectedLocalFallbackCategoryScores({
+        scenarioJson,
+        transcript,
+      }),
+    );
   });
 
   it("keeps scoring the session when policy grounding fails", async () => {
@@ -751,9 +869,12 @@ describe("simulator.evaluate", () => {
         closing_control: 7,
       },
       score_dimensions: {
-        interaction_quality: 74,
-        operational_effectiveness: 76,
-        outcome_quality: 82,
+        member_connection: 74,
+        listening_discovery: 75,
+        ownership_accountability: 76,
+        problem_solving_policy: 78,
+        clarity_expectation_setting: 77,
+        resolution_control: 82,
       },
       best_moments: ["Took ownership of the billing issue."],
       missed_moments: ["Could have named the follow-up timeline sooner."],
@@ -832,9 +953,12 @@ describe("simulator.evaluate", () => {
         closing_control: 7,
       },
       score_dimensions: {
-        interaction_quality: 73,
-        operational_effectiveness: 75,
-        outcome_quality: 79,
+        member_connection: 73,
+        listening_discovery: 74,
+        ownership_accountability: 75,
+        problem_solving_policy: 76,
+        clarity_expectation_setting: 74,
+        resolution_control: 79,
       },
       best_moments: ["Took ownership and explained the next step."],
       missed_moments: ["Could have named the callback timeline faster."],
@@ -882,7 +1006,7 @@ describe("simulator.evaluate", () => {
     expect(result.sessionQuality.flags).toContain("quality_gate_unavailable");
     expect(result.sessionQuality.reason).toContain("scoring continued without a quality-gate retry recommendation");
     expect(result.evaluation.overall_score).toBeGreaterThan(0);
-    expect(result.evaluation.score_rubric.name).toBe("Outcome Weighted");
+    expect(result.evaluation.score_rubric.name).toBe("WSC Member Service Interaction Rubric v1");
     expect(result.coaching.employee_coaching_summary).toContain("usable next step");
   });
 
@@ -920,9 +1044,12 @@ describe("simulator.evaluate", () => {
         closing_control: 6,
       },
       score_dimensions: {
-        interaction_quality: 71,
-        operational_effectiveness: 73,
-        outcome_quality: 78,
+        member_connection: 71,
+        listening_discovery: 72,
+        ownership_accountability: 73,
+        problem_solving_policy: 74,
+        clarity_expectation_setting: 72,
+        resolution_control: 78,
       },
       best_moments: ["Took ownership and named the billing path."],
       missed_moments: ["Could have named the callback timeline faster."],
@@ -1084,7 +1211,7 @@ describe("simulator.evaluate", () => {
     expect(result.evaluation.category_scores.ownership).toBeLessThanOrEqual(5);
     expect(result.evaluation.category_scores.problem_solving).toBeLessThanOrEqual(2);
     expect(result.evaluation.category_scores.listening_empathy).toBeLessThanOrEqual(5);
-    expect(result.evaluation.score_dimensions.outcome_quality).toBeLessThan(50);
+    expect(result.evaluation.score_dimensions.resolution_control).toBeLessThan(50);
     expect(result.evaluation.overall_score).toBeLessThan(60);
     expect(result.evaluation.missed_moments).toContain("Tried to close the conversation before the issue was actually resolved.");
   });
@@ -1221,7 +1348,7 @@ describe("simulator.evaluate", () => {
     }) as any;
 
     expect(result.processingStatus).toBe("completed");
-    expect(result.evaluation.score_dimensions.outcome_quality).toBeGreaterThanOrEqual(85);
+    expect(result.evaluation.score_dimensions.resolution_control).toBeGreaterThanOrEqual(85);
     expect(result.evaluation.category_scores.problem_solving).toBeGreaterThanOrEqual(7);
     expect(result.evaluation.category_scores.closing_control).toBeGreaterThanOrEqual(7);
     expect(result.evaluation.overall_score).toBeGreaterThanOrEqual(75);

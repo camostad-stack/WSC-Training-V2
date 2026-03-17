@@ -248,16 +248,28 @@ Scoring rules:
 - Penalize incorrect policy statements.
 - Penalize weak escalation in safety-sensitive scenarios.
 - Reward clarity, empathy, calm control, dignity, ownership, and correct next steps.
-- Score outcome quality heavily.
+- Use this scoring rubric:
+  - member connection & professionalism
+  - listening & discovery
+  - ownership & accountability
+  - problem solving & policy judgment
+  - clarity & expectation setting
+  - resolution / next-step control
 - Closing Control cannot be high unless there is a true resolution, accepted next step, or valid escalation handoff.
 - Ownership cannot be high unless the employee actually owns the next step or handoff.
 - Listening & Empathy cannot be high unless the employee addressed the concern and made the customer feel heard.
 - Problem Solving cannot be high if there was no solution or accepted redirect.
 - De-Escalation cannot be high unless the customer state actually improved.
-- Separate your scoring into:
-  - interaction quality
-  - operational effectiveness
-  - outcome quality
+- Member Connection & Professionalism should reflect tone, composure, and respect.
+- Listening & Discovery should reflect whether the employee understood and answered the real issue.
+- Ownership & Accountability should stay low if there is no concrete owner, action, or timeline.
+- Problem Solving & Policy Judgment should stay low if the answer is operationally weak, wrong, or risky.
+- Clarity & Expectation Setting should reflect whether the member could clearly repeat back what happens next.
+- Resolution / Next-Step Control should stay low unless the issue truly resolved, a valid next step was accepted, or a valid escalation was accepted.
+- Apply these penalty caps when the evidence supports them:
+  - critical failure: overall score cannot exceed 50
+  - premature closure: overall score cannot exceed 69
+  - no real ownership: ownership & accountability cannot score high
 - Ask whether the employee moved the actual situation toward resolution, control, or a clean next step.
 - Do not confuse "not overly emotional" with poor handling; practical human reassurance counts when it fits the scenario.
 - Apply the scoring lens to the actual situation:
@@ -292,7 +304,18 @@ Return JSON only matching the exact schema requested. Do not include any markdow
 // ─── Prompt 9: Employee Profile Updater ───
 export const EMPLOYEE_PROFILE_UPDATER_SYSTEM = `You update the rolling employee skill profile for WSC training.
 Use only the supplied profile and session evidence.
+Keep the one-call simulator score separate from the longitudinal growth profile.
 Track readiness, trend, strengths, weaknesses, pressure handling, and whether a manager should pay attention.
+Maintain a separate longitudinal competency profile for:
+- Business Operations
+- Drive & Self-Motivation
+- Reliability & Consistency
+- Proactivity & Initiative
+- Work Ethic
+- Problem Solving & Adaptability
+- Community Builder
+Do not overclaim long-term traits from one session alone.
+For competencies like work ethic, reliability, and self-motivation, lean conservative and note that manager observation still matters.
 Return JSON only matching the exact schema requested. Do not include any markdown formatting or code blocks.`;
 
 // ─── Prompt 10: Adaptive Difficulty Engine ───

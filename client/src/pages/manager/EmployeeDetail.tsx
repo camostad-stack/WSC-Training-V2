@@ -6,6 +6,11 @@ import { Progress } from "@/components/ui/progress";
 import { Loader2, ArrowLeft, User, TrendingUp, AlertTriangle, ChevronRight } from "lucide-react";
 import { useLocation, useParams } from "wouter";
 import { familyLabels } from "@/features/simulator/config";
+import {
+  deriveLegacyLongitudinalProfileFallback,
+  getLongitudinalCompetencyEntries,
+  normalizeLongitudinalProfile,
+} from "@shared/longitudinal-profile";
 
 export default function EmployeeDetail() {
   const params = useParams<{ id: string }>();
@@ -43,6 +48,30 @@ export default function EmployeeDetail() {
     try { return typeof p?.skillMap === "string" ? JSON.parse(p.skillMap) : (p?.skillMap || {}); }
     catch { return {}; }
   })() as Record<string, number>;
+  const longitudinalProfile = (() => {
+    if (!p?.longitudinalProfile) {
+      return deriveLegacyLongitudinalProfileFallback({
+        levelEstimate: p?.levelEstimate,
+        totalSessions: p?.totalSessions,
+        consistencyScore: p?.consistencyScore,
+        skillMap,
+      });
+    }
+
+    try {
+      return normalizeLongitudinalProfile(
+        typeof p.longitudinalProfile === "string" ? JSON.parse(p.longitudinalProfile) : p.longitudinalProfile,
+      );
+    } catch {
+      return deriveLegacyLongitudinalProfileFallback({
+        levelEstimate: p?.levelEstimate,
+        totalSessions: p?.totalSessions,
+        consistencyScore: p?.consistencyScore,
+        skillMap,
+      });
+    }
+  })();
+  const longitudinalEntries = getLongitudinalCompetencyEntries(longitudinalProfile);
 
   const readinessColor = (status: string) => {
     switch (status) {
@@ -82,7 +111,7 @@ export default function EmployeeDetail() {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <Card className="bg-card border-border">
               <CardContent className="pt-4 pb-4">
-                <div className="text-xs text-muted-foreground mb-1">Level</div>
+                <div className="text-xs text-muted-foreground mb-1">Practice Level</div>
                 <div className="font-mono text-2xl font-bold text-teal">{p.levelEstimate || "—"}</div>
               </CardContent>
             </Card>
@@ -124,10 +153,85 @@ export default function EmployeeDetail() {
             </Card>
           )}
 
-          {/* Skill Map */}
+          {/* Longitudinal Profile */}
           <Card className="bg-card border-border">
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">Skill Map</CardTitle>
+              <div className="flex items-start justify-between gap-3">
+                <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">Longitudinal Growth Profile</CardTitle>
+                <Badge variant="outline" className="border-border text-[10px] font-mono">
+                  {longitudinalProfile.stage_label}
+                </Badge>
+              </div>
+              <p className="text-sm text-muted-foreground">{longitudinalProfile.summary}</p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="rounded-xl border border-border bg-background/40 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium">{longitudinalProfile.framework_name}</div>
+                    <div className="mt-1 text-xs text-muted-foreground leading-relaxed">{longitudinalProfile.stage_summary}</div>
+                  </div>
+                  <Badge variant="outline" className="border-border text-[10px] font-mono">
+                    {longitudinalProfile.confidence}
+                  </Badge>
+                </div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                {longitudinalEntries.map((entry) => (
+                  <div key={entry.key} className="rounded-xl border border-border bg-background/40 p-3">
+                    <div className="flex items-start justify-between gap-3 text-xs mb-2">
+                      <div>
+                        <div className="text-foreground font-medium">{entry.label}</div>
+                        <div className="mt-1 text-muted-foreground leading-relaxed">{entry.description}</div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="font-mono text-foreground">{entry.score}/100</div>
+                        <div className="text-[10px] text-muted-foreground font-mono uppercase">{entry.trend}</div>
+                      </div>
+                    </div>
+                    <Progress value={entry.score} className="h-1.5 mb-2" />
+                    <div className="text-xs text-muted-foreground leading-relaxed">{entry.summary}</div>
+                    <div className="mt-2">
+                      <Badge variant="outline" className="border-border text-[10px] font-mono">
+                        {entry.manager_confirmation_needed ? "Manager confirmation needed" : "Simulator observable"}
+                      </Badge>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-xl border border-border bg-background/40 p-3">
+                  <div className="text-[11px] font-mono text-muted-foreground uppercase tracking-wider mb-2">Development Priorities</div>
+                  {longitudinalProfile.development_priorities.length > 0 ? (
+                    <ul className="space-y-1.5 text-sm text-muted-foreground">
+                      {longitudinalProfile.development_priorities.map((item) => (
+                        <li key={item}>- {item}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No sustained priorities yet.</p>
+                  )}
+                </div>
+                <div className="rounded-xl border border-border bg-background/40 p-3">
+                  <div className="text-[11px] font-mono text-muted-foreground uppercase tracking-wider mb-2">Manager Observation Focus</div>
+                  {longitudinalProfile.manager_observation_focus.length > 0 ? (
+                    <ul className="space-y-1.5 text-sm text-muted-foreground">
+                      {longitudinalProfile.manager_observation_focus.map((item) => (
+                        <li key={item}>- {item}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No extra manager observation needed.</p>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Practice Signals */}
+          <Card className="bg-card border-border">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">Practice Signals</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
               {Object.entries(skillMap).length === 0 ? (
@@ -194,7 +298,11 @@ export default function EmployeeDetail() {
               <CardTitle className="text-sm font-mono tracking-wider uppercase text-muted-foreground">Recent Sessions</CardTitle>
             </CardHeader>
             <CardContent>
-              {recentSessions.length === 0 ? (
+              {sessions.isLoading ? (
+                <div className="flex items-center justify-center py-6">
+                  <Loader2 className="h-5 w-5 animate-spin text-teal" />
+                </div>
+              ) : recentSessions.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No sessions found for this employee</p>
               ) : (
                 <div className="space-y-1">

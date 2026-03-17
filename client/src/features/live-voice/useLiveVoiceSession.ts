@@ -20,6 +20,7 @@ import { playCustomerAudioTurn } from "@/features/live-voice/audio-playback";
 import {
   getRealtimeEmployeeTurnFinalizeDelay,
   mergeRealtimeTranscriptSegments,
+  resolveRealtimeTranscriptFinalize,
   resolveRealtimeResponseCompletion,
 } from "@/features/live-voice/realtime-control";
 import {
@@ -172,6 +173,7 @@ export function useLiveVoiceSession(params: {
   const pendingRealtimeTranscriptTurnKeyRef = useRef<string | null>(null);
   const realtimeTurnFinalizeTimerRef = useRef<number | null>(null);
   const realtimeEmployeeSpeakingRef = useRef(false);
+  const realtimeObservedSpeechStopRef = useRef(false);
   const employeeSpeechRevisionRef = useRef(0);
   const pendingRealtimeResponseRevisionRef = useRef<number | null>(null);
   const pendingRealtimeTerminalValidationRef = useRef<{
@@ -550,6 +552,7 @@ export function useLiveVoiceSession(params: {
     pendingRealtimeTranscriptSegmentsRef.current = [];
     pendingRealtimeTranscriptTurnKeyRef.current = null;
     realtimeEmployeeSpeakingRef.current = false;
+    realtimeObservedSpeechStopRef.current = false;
     pendingRealtimeResponseRevisionRef.current = null;
     dataChannelRef.current?.close();
     dataChannelRef.current = null;
@@ -891,6 +894,7 @@ export function useLiveVoiceSession(params: {
     const transcriptTurnKey = pendingRealtimeTranscriptTurnKeyRef.current || `employee-${Date.now()}`;
     pendingRealtimeTranscriptSegmentsRef.current = [];
     pendingRealtimeTranscriptTurnKeyRef.current = null;
+    realtimeObservedSpeechStopRef.current = false;
     clearRealtimeTurnFinalizeTimer();
 
     if (!transcriptText) {
@@ -966,10 +970,13 @@ export function useLiveVoiceSession(params: {
     stopEmployeeTurnCapture,
   ]);
 
-  const scheduleRealtimeEmployeeTurnFinalize = useCallback(() => {
+  const scheduleRealtimeEmployeeTurnFinalize = useCallback((strategy: "normal" | "watchdog" = "normal") => {
     clearRealtimeTurnFinalizeTimer();
     const mergedTranscript = mergeRealtimeTranscriptSegments(pendingRealtimeTranscriptSegmentsRef.current);
-    const delayMs = getRealtimeEmployeeTurnFinalizeDelay(mergedTranscript);
+    const baseDelayMs = getRealtimeEmployeeTurnFinalizeDelay(mergedTranscript);
+    const delayMs = strategy === "watchdog"
+      ? Math.max(baseDelayMs, 9000)
+      : baseDelayMs;
     realtimeTurnFinalizeTimerRef.current = window.setTimeout(() => {
       void flushPendingRealtimeEmployeeTurn();
     }, delayMs);
@@ -1076,6 +1083,7 @@ export function useLiveVoiceSession(params: {
 
     if (type === "input_audio_buffer.speech_started") {
       realtimeEmployeeSpeakingRef.current = true;
+      realtimeObservedSpeechStopRef.current = false;
       employeeSpeechRevisionRef.current += 1;
       pendingRealtimeResponseRevisionRef.current = null;
       clearRealtimeTurnFinalizeTimer();
@@ -1088,9 +1096,15 @@ export function useLiveVoiceSession(params: {
     }
     if (type === "input_audio_buffer.speech_stopped") {
       realtimeEmployeeSpeakingRef.current = false;
+      realtimeObservedSpeechStopRef.current = true;
       appendTimingMarker("employee_speech_stopped");
-      if (pendingRealtimeTranscriptSegmentsRef.current.length > 0) {
-        scheduleRealtimeEmployeeTurnFinalize();
+      const finalizeDecision = resolveRealtimeTranscriptFinalize({
+        hasPendingTranscript: pendingRealtimeTranscriptSegmentsRef.current.length > 0,
+        isEmployeeCurrentlySpeaking: realtimeEmployeeSpeakingRef.current,
+        observedSpeechStopForPendingTurn: realtimeObservedSpeechStopRef.current,
+      });
+      if (finalizeDecision.shouldScheduleFinalize) {
+        scheduleRealtimeEmployeeTurnFinalize(finalizeDecision.strategy === "watchdog" ? "watchdog" : "normal");
       }
       return;
     }
@@ -1119,8 +1133,13 @@ export function useLiveVoiceSession(params: {
         ];
         pendingRealtimeTranscriptTurnKeyRef.current = pendingRealtimeTranscriptTurnKeyRef.current || `employee-${transcriptItemId || Date.now()}`;
         setDraftTranscript(mergeRealtimeTranscriptSegments(pendingRealtimeTranscriptSegmentsRef.current));
-        if (!realtimeEmployeeSpeakingRef.current) {
-          scheduleRealtimeEmployeeTurnFinalize();
+        const finalizeDecision = resolveRealtimeTranscriptFinalize({
+          hasPendingTranscript: pendingRealtimeTranscriptSegmentsRef.current.length > 0,
+          isEmployeeCurrentlySpeaking: realtimeEmployeeSpeakingRef.current,
+          observedSpeechStopForPendingTurn: realtimeObservedSpeechStopRef.current,
+        });
+        if (finalizeDecision.shouldScheduleFinalize) {
+          scheduleRealtimeEmployeeTurnFinalize(finalizeDecision.strategy === "watchdog" ? "watchdog" : "normal");
         }
       }
       return;
@@ -1382,6 +1401,7 @@ export function useLiveVoiceSession(params: {
     processedRealtimeTranscriptItemIdsRef.current.clear();
     pendingRealtimeTranscriptSegmentsRef.current = [];
     pendingRealtimeTranscriptTurnKeyRef.current = null;
+    realtimeObservedSpeechStopRef.current = false;
     pendingRealtimeResponseRevisionRef.current = null;
     setDraftTranscript("");
     setVoiceMode("fallback");

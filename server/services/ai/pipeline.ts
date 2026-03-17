@@ -1539,6 +1539,54 @@ function buildPolicyGroundingFallback(params: {
   });
 }
 
+function buildCoachingFallbackFromEvaluation(params: {
+  scenarioJson: ScenarioDirectorResult;
+  evaluation: EvaluationResult;
+  error: PromptExecutionError;
+}): CoachingResult {
+  const scenarioGoal = getScenarioGoal(params.scenarioJson);
+  const coachingGuidance = buildScenarioCoachingGuidance(params.scenarioJson);
+
+  return coachingResultSchema.parse({
+    employee_coaching_summary: `${params.evaluation.summary} Coaching prompt fallback was used because ${params.error.promptName} was unavailable.`,
+    what_you_did_well: params.evaluation.best_moments.slice(0, 3),
+    what_hurt_you: params.evaluation.missed_moments.slice(0, 3),
+    do_this_next_time: params.evaluation.missed_moments.length > 0
+      ? params.evaluation.missed_moments.slice(0, 2)
+      : coachingGuidance.doThisNextTime,
+    replacement_phrases: coachingGuidance.replacementPhrases,
+    practice_focus: params.evaluation.most_important_correction
+      ? scenarioGoal.title.toLowerCase().replace(/\s+/g, "_")
+      : coachingGuidance.doThisNextTime[0]
+        ? coachingGuidance.doThisNextTime[0].toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "")
+        : scenarioGoal.title.toLowerCase().replace(/\s+/g, "_"),
+    next_recommended_scenario: params.scenarioJson.scenario_family,
+  });
+}
+
+function buildManagerDebriefFallbackFromEvaluation(params: {
+  scenarioJson: ScenarioDirectorResult;
+  evaluation: EvaluationResult;
+  coaching: CoachingResult;
+  error: PromptExecutionError;
+}): ManagerDebriefResult {
+  const priorityProfile = getScenarioPriorityProfile(params.scenarioJson);
+  const overallScore = params.evaluation.overall_score;
+
+  return managerDebriefResultSchema.parse({
+    manager_summary: `${params.evaluation.summary} Manager debrief fallback was used because ${params.error.promptName} was unavailable.`,
+    performance_signal: overallScore >= 80 ? "green" : overallScore >= 65 ? "yellow" : "red",
+    top_strengths: params.evaluation.best_moments.slice(0, 3),
+    top_corrections: params.evaluation.missed_moments.slice(0, 3),
+    whether_live_shadowing_is_needed: overallScore < 60,
+    whether_manager_follow_up_is_needed: overallScore < 75,
+    recommended_follow_up_action: overallScore < 75
+      ? `Coach the employee on ${priorityProfile.primary.join(", ")} and replay ${params.coaching.practice_focus || params.scenarioJson.scenario_family}.`
+      : "Advance to the next realistic difficulty with the same complaint family.",
+    recommended_next_drill: params.coaching.next_recommended_scenario || params.scenarioJson.scenario_family,
+  });
+}
+
 async function retrievePolicyContext(params: {
   department?: string;
   scenarioFamily?: string;
@@ -1973,16 +2021,6 @@ export async function runPostSessionEvaluation(params: {
       `Scenario:\n${JSON.stringify(params.scenarioJson, null, 2)}\n\nTranscript:\n${transcriptText}\n\nConversation state history:\n${JSON.stringify(stateHistory, null, 2)}\n\nPolicy grounding:\n${JSON.stringify(validatedPolicyGrounding, null, 2)}\n\nVisible behavior:\n${JSON.stringify(mediaAssessment.visibleBehavior, null, 2)}`,
     );
 
-    const coaching = await runPrompt(
-      AI_SERVICE_REGISTRY.coachingGenerator,
-      `Scenario:\n${JSON.stringify(params.scenarioJson, null, 2)}\n\nEvaluation:\n${JSON.stringify(evaluation, null, 2)}`,
-    );
-
-    const managerDebrief = await runPrompt(
-      AI_SERVICE_REGISTRY.managerDebriefGenerator,
-      `Employee name: ${params.employeeName || "Training Employee"}\nRole: ${params.employeeRole}\nScenario: ${JSON.stringify(params.scenarioJson, null, 2)}\nEvaluation: ${JSON.stringify(evaluation, null, 2)}\nCoaching: ${JSON.stringify(coaching, null, 2)}`,
-    );
-
     const validatedSessionQuality = sessionQualityResultSchema.parse(sessionQuality);
     const validatedEvaluation = finalizeEvaluationFromEvidence({
       scenarioJson: parsedScenario,
@@ -1990,8 +2028,44 @@ export async function runPostSessionEvaluation(params: {
       stateHistory,
       rawEvaluation: evaluationResultSchema.parse(evaluation),
     });
-    const validatedCoaching = coachingResultSchema.parse(coaching);
-    const validatedManagerDebrief = managerDebriefResultSchema.parse(managerDebrief);
+    let validatedCoaching: CoachingResult;
+    try {
+      const coaching = await runPrompt(
+        AI_SERVICE_REGISTRY.coachingGenerator,
+        `Scenario:\n${JSON.stringify(params.scenarioJson, null, 2)}\n\nEvaluation:\n${JSON.stringify(validatedEvaluation, null, 2)}`,
+      );
+      validatedCoaching = coachingResultSchema.parse(coaching);
+    } catch (error) {
+      if (error instanceof PromptExecutionError && error.promptName === AI_SERVICE_REGISTRY.coachingGenerator.name) {
+        validatedCoaching = buildCoachingFallbackFromEvaluation({
+          scenarioJson: parsedScenario,
+          evaluation: validatedEvaluation,
+          error,
+        });
+      } else {
+        throw error;
+      }
+    }
+
+    let validatedManagerDebrief: ManagerDebriefResult;
+    try {
+      const managerDebrief = await runPrompt(
+        AI_SERVICE_REGISTRY.managerDebriefGenerator,
+        `Employee name: ${params.employeeName || "Training Employee"}\nRole: ${params.employeeRole}\nScenario: ${JSON.stringify(params.scenarioJson, null, 2)}\nEvaluation: ${JSON.stringify(validatedEvaluation, null, 2)}\nCoaching: ${JSON.stringify(validatedCoaching, null, 2)}`,
+      );
+      validatedManagerDebrief = managerDebriefResultSchema.parse(managerDebrief);
+    } catch (error) {
+      if (error instanceof PromptExecutionError && error.promptName === AI_SERVICE_REGISTRY.managerDebriefGenerator.name) {
+        validatedManagerDebrief = buildManagerDebriefFallbackFromEvaluation({
+          scenarioJson: parsedScenario,
+          evaluation: validatedEvaluation,
+          coaching: validatedCoaching,
+          error,
+        });
+      } else {
+        throw error;
+      }
+    }
     const processingStatus = validatedSessionQuality.retry_recommended || validatedSessionQuality.session_quality === "invalid"
       ? "reprocess"
       : "completed";

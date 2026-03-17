@@ -4,6 +4,7 @@ import {
   getRealtimeEmployeeTurnFinalizeDelay,
   looksLikeIncompleteEmployeeTurn,
   mergeRealtimeTranscriptSegments,
+  resolveRealtimeTranscriptFinalize,
   resolveRealtimeResponseCompletion,
 } from "./realtime-control";
 
@@ -54,5 +55,34 @@ describe("resolveRealtimeResponseCompletion", () => {
     expect(getRealtimeEmployeeTurnFinalizeDelay("I can explain the two charges, and")).toBe(4200);
     expect(looksLikeIncompleteEmployeeTurn("Yes, I can do that.")).toBe(false);
     expect(getRealtimeEmployeeTurnFinalizeDelay("Yes, I can do that.")).toBe(1500);
+  });
+
+  it("does not finalize a pending transcript until speech has actually stopped", () => {
+    expect(resolveRealtimeTranscriptFinalize({
+      hasPendingTranscript: true,
+      isEmployeeCurrentlySpeaking: true,
+      observedSpeechStopForPendingTurn: false,
+    })).toEqual({
+      shouldScheduleFinalize: false,
+      strategy: "none",
+    });
+
+    expect(resolveRealtimeTranscriptFinalize({
+      hasPendingTranscript: true,
+      isEmployeeCurrentlySpeaking: false,
+      observedSpeechStopForPendingTurn: false,
+    })).toEqual({
+      shouldScheduleFinalize: true,
+      strategy: "watchdog",
+    });
+
+    expect(resolveRealtimeTranscriptFinalize({
+      hasPendingTranscript: true,
+      isEmployeeCurrentlySpeaking: false,
+      observedSpeechStopForPendingTurn: true,
+    })).toEqual({
+      shouldScheduleFinalize: true,
+      strategy: "normal",
+    });
   });
 });

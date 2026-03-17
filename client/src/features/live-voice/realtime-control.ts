@@ -11,6 +11,11 @@ export type RealtimeResponseCompletionDecision = {
   blockedBy: string[];
 };
 
+export type RealtimeTranscriptFinalizeDecision = {
+  shouldScheduleFinalize: boolean;
+  strategy: "none" | "normal" | "watchdog";
+};
+
 const INCOMPLETE_ENDING_PATTERNS = [
   /(?:^|\s)(and|or|but|so|because|if|when|then|that|to|for|with|about|into|from)$/i,
   /(?:^|\s)(i|we|you|they|he|she)\s+(can|could|will|would|should|have|need)\s*$/i,
@@ -50,6 +55,26 @@ export function getRealtimeEmployeeTurnFinalizeDelay(text: string) {
   }
 
   return 1500;
+}
+
+export function resolveRealtimeTranscriptFinalize(params: {
+  hasPendingTranscript: boolean;
+  isEmployeeCurrentlySpeaking: boolean;
+  observedSpeechStopForPendingTurn: boolean;
+}): RealtimeTranscriptFinalizeDecision {
+  if (!params.hasPendingTranscript) {
+    return { shouldScheduleFinalize: false, strategy: "none" };
+  }
+
+  if (params.isEmployeeCurrentlySpeaking) {
+    return { shouldScheduleFinalize: false, strategy: "none" };
+  }
+
+  if (!params.observedSpeechStopForPendingTurn) {
+    return { shouldScheduleFinalize: true, strategy: "watchdog" };
+  }
+
+  return { shouldScheduleFinalize: true, strategy: "normal" };
 }
 
 export function resolveRealtimeResponseCompletion(

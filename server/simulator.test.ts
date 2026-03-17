@@ -803,6 +803,75 @@ describe("simulator.evaluate", () => {
     expect(result.coaching.employee_coaching_summary).toContain("ownership");
   });
 
+  it("falls back to deterministic coaching and manager debrief when those prompts fail", async () => {
+    ENV.forgeApiKey = "test-forge-key";
+
+    mockLLMResponse({
+      policy_accuracy: "partially_correct",
+      matched_policy_points: ["Referenced a concrete billing next step."],
+      missed_policy_points: [],
+      invented_or_risky_statements: [],
+      should_have_escalated: false,
+      policy_notes: "Policy grounding succeeded.",
+    });
+    mockLLMResponse({
+      session_quality: "valid",
+      flags: [],
+      reason: "",
+      retry_recommended: false,
+    });
+    mockLLMResponse({
+      overall_score: 74,
+      pass_fail: "borderline",
+      readiness_signal: "shadow_ready",
+      category_scores: {
+        opening_warmth: 6,
+        listening_empathy: 7,
+        clarity_directness: 7,
+        policy_accuracy: 7,
+        ownership: 8,
+        problem_solving: 7,
+        de_escalation: 6,
+        escalation_judgment: 6,
+        visible_professionalism: 0,
+        closing_control: 6,
+      },
+      score_dimensions: {
+        interaction_quality: 71,
+        operational_effectiveness: 73,
+        outcome_quality: 78,
+      },
+      best_moments: ["Took ownership and named the billing path."],
+      missed_moments: ["Could have named the callback timeline faster."],
+      critical_mistakes: [],
+      coachable_mistakes: ["State the callback time earlier."],
+      most_important_correction: "State the billing callback time earlier.",
+      ideal_response_example: "I can see one pending charge and one final charge, and billing will call you back by 3 PM today.",
+      summary: "A mostly solid billing explanation with a usable next step.",
+    });
+    mockInvokeLLM.mockRejectedValueOnce(new Error("coaching unavailable"));
+    mockInvokeLLM.mockRejectedValueOnce(new Error("manager debrief unavailable"));
+
+    const caller = appRouter.createCaller(createAuthContext());
+    const result = await caller.simulator.evaluate({
+      scenarioJson: createScenarioFixture(),
+      transcript: [
+        { role: "customer", message: "Why are there two charges on my account?" },
+        { role: "employee", message: "I can see one pending charge and one final charge." },
+        { role: "customer", message: "Okay, what happens next?" },
+        { role: "employee", message: "I am escalating this to billing, and you will hear back this afternoon." },
+      ],
+      employeeRole: "Front Desk Associate",
+    }) as any;
+
+    expect(result.processingStatus).toBe("completed");
+    expect(result.failure).toBeUndefined();
+    expect(result.evaluation.overall_score).toBeGreaterThan(0);
+    expect(result.coaching.employee_coaching_summary).toContain("Coaching prompt fallback was used");
+    expect(result.managerDebrief.manager_summary).toContain("Manager debrief fallback was used");
+    expect(result.managerDebrief.recommended_next_drill).toBeTruthy();
+  });
+
   it("caps outcome-gated scores when the employee tries to close without a real outcome", async () => {
     const caller = appRouter.createCaller(createAuthContext());
     const result = await caller.simulator.evaluate({

@@ -29,8 +29,8 @@ import {
 } from "@/features/live-voice/realtime-protocol";
 import {
   applyRealtimeTurnSequencerEvent,
-  consumeRealtimeTurnSequencerState,
   createRealtimeTurnSequencerState,
+  flushRealtimeTurnSequencerState,
 } from "@/features/live-voice/realtime-turn-sequencer";
 import {
   appendBlockedPrematureClosureToState,
@@ -878,18 +878,18 @@ export function useLiveVoiceSession(params: {
     }
   }, [appendCloseTriggerLog, appendStateSnapshot, appendTimingMarker, appendTranscript, appendTurnEvent, cleanupConnection, connectionState, getActiveVoiceCast, isMuted, params.scenario, processLiveTurn, recordBlockedPrematureClosure, sendClientEvent, speakCustomerMessage, startRecognition]);
 
-  const flushPendingRealtimeEmployeeTurn = useCallback(async () => {
-    if (realtimeTurnSequencerRef.current.isEmployeeSpeaking) {
-      scheduleRealtimeEmployeeTurnFinalize("watchdog");
-      return;
-    }
-
-    const consumedTurn = consumeRealtimeTurnSequencerState(
-      realtimeTurnSequencerRef.current,
-      `employee-${Date.now()}`,
-    );
+  const flushPendingRealtimeEmployeeTurn = useCallback(async (trigger: "normal" | "watchdog" = "normal") => {
+    const consumedTurn = flushRealtimeTurnSequencerState(realtimeTurnSequencerRef.current, {
+      fallbackTurnKey: `employee-${Date.now()}`,
+      trigger,
+    });
     realtimeTurnSequencerRef.current = consumedTurn.nextState;
     clearRealtimeTurnFinalizeTimer();
+
+    if (consumedTurn.shouldDefer) {
+      scheduleRealtimeEmployeeTurnFinalize(consumedTurn.nextFinalizeStrategy ?? "watchdog");
+      return;
+    }
 
     const transcriptText = consumedTurn.transcriptText;
     const transcriptTurnKey = consumedTurn.transcriptTurnKey;
@@ -979,7 +979,7 @@ export function useLiveVoiceSession(params: {
       ? Math.max(baseDelayMs, 9000)
       : baseDelayMs;
     realtimeTurnFinalizeTimerRef.current = window.setTimeout(() => {
-      void flushPendingRealtimeEmployeeTurn();
+      void flushPendingRealtimeEmployeeTurn(strategy);
     }, delayMs);
   }, [clearRealtimeTurnFinalizeTimer, flushPendingRealtimeEmployeeTurn]);
 

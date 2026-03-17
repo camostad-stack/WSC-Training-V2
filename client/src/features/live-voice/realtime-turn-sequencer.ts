@@ -36,6 +36,14 @@ export type RealtimeTurnSequencerResult = {
   finalizeDecision: RealtimeTranscriptFinalizeDecision;
 };
 
+export type RealtimeTurnSequencerFlushResult = {
+  nextState: RealtimeTurnSequencerState;
+  transcriptText: string;
+  transcriptTurnKey: string;
+  shouldDefer: boolean;
+  nextFinalizeStrategy: "watchdog" | null;
+};
+
 export function createRealtimeTurnSequencerState(): RealtimeTurnSequencerState {
   return {
     processedTranscriptItemIds: new Set<string>(),
@@ -153,5 +161,35 @@ export function consumeRealtimeTurnSequencerState(
       pendingTurnKey: null,
       observedSpeechStopForPendingTurn: false,
     } satisfies RealtimeTurnSequencerState,
+  };
+}
+
+export function flushRealtimeTurnSequencerState(
+  state: RealtimeTurnSequencerState,
+  params: {
+    fallbackTurnKey: string;
+    trigger: "normal" | "watchdog";
+  },
+): RealtimeTurnSequencerFlushResult {
+  if (state.isEmployeeSpeaking && params.trigger !== "watchdog") {
+    return {
+      nextState: state,
+      transcriptText: "",
+      transcriptTurnKey: state.pendingTurnKey || params.fallbackTurnKey,
+      shouldDefer: true,
+      nextFinalizeStrategy: "watchdog",
+    };
+  }
+
+  const consumed = consumeRealtimeTurnSequencerState(state, params.fallbackTurnKey);
+  return {
+    nextState: {
+      ...consumed.nextState,
+      isEmployeeSpeaking: params.trigger === "watchdog" ? false : state.isEmployeeSpeaking,
+    },
+    transcriptText: consumed.transcriptText,
+    transcriptTurnKey: consumed.transcriptTurnKey,
+    shouldDefer: false,
+    nextFinalizeStrategy: null,
   };
 }

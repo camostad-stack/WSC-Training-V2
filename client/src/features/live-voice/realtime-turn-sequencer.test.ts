@@ -4,6 +4,7 @@ import {
   applyRealtimeTurnSequencerEvent,
   consumeRealtimeTurnSequencerState,
   createRealtimeTurnSequencerState,
+  flushRealtimeTurnSequencerState,
 } from "./realtime-turn-sequencer";
 
 describe("realtime-turn-sequencer", () => {
@@ -154,9 +155,15 @@ describe("realtime-turn-sequencer", () => {
       strategy: "watchdog",
     });
 
-    const consumed = consumeRealtimeTurnSequencerState(state, "employee-fallback");
-    expect(consumed.transcriptText).toBe("Let me pull up the account details");
-    expect(consumed.transcriptTurnKey).toBe("employee-missing-stop");
+    const flushed = flushRealtimeTurnSequencerState(state, {
+      fallbackTurnKey: "employee-fallback",
+      trigger: "watchdog",
+    });
+
+    expect(flushed.shouldDefer).toBe(false);
+    expect(flushed.transcriptText).toBe("Let me pull up the account details");
+    expect(flushed.transcriptTurnKey).toBe("employee-missing-stop");
+    expect(flushed.nextState.isEmployeeSpeaking).toBe(false);
   });
 
   it("ignores duplicate transcript completions for the same realtime item", () => {
@@ -206,5 +213,32 @@ describe("realtime-turn-sequencer", () => {
     expect(result.mergedTranscript).toBe("Second turn");
     expect(result.pendingTurnKey).toBe("employee-new");
     expect(result.nextState.observedSpeechStopForPendingTurn).toBe(false);
+  });
+
+  it("defers a normal flush while the employee is still marked as speaking", () => {
+    let state = createRealtimeTurnSequencerState();
+
+    let result = applyRealtimeTurnSequencerEvent(state, {
+      type: "input_audio_buffer.speech_started",
+    });
+    state = result.nextState;
+
+    result = applyRealtimeTurnSequencerEvent(state, {
+      type: "conversation.item.input_audio_transcription.completed",
+      itemId: "item_defer",
+      transcriptText: "I can explain the two charges",
+      fallbackTurnKey: "employee-defer",
+    });
+    state = result.nextState;
+
+    const flushed = flushRealtimeTurnSequencerState(state, {
+      fallbackTurnKey: "employee-fallback",
+      trigger: "normal",
+    });
+
+    expect(flushed.shouldDefer).toBe(true);
+    expect(flushed.nextFinalizeStrategy).toBe("watchdog");
+    expect(flushed.transcriptText).toBe("");
+    expect(flushed.nextState.pendingTranscriptSegments).toEqual(["I can explain the two charges"]);
   });
 });

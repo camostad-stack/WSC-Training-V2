@@ -61,7 +61,10 @@ describe("realtime-turn-sequencer", () => {
     });
     state = result.nextState;
     expect(result.mergedTranscript).toBe("Yes, so I can");
-    expect(result.finalizeDecision.shouldScheduleFinalize).toBe(false);
+    expect(result.finalizeDecision).toEqual({
+      shouldScheduleFinalize: true,
+      strategy: "watchdog",
+    });
 
     result = applyRealtimeTurnSequencerEvent(state, {
       type: "input_audio_buffer.speech_stopped",
@@ -87,7 +90,10 @@ describe("realtime-turn-sequencer", () => {
     });
     state = result.nextState;
     expect(result.mergedTranscript).toBe("Yes, so I can help with that charge today.");
-    expect(result.finalizeDecision.shouldScheduleFinalize).toBe(false);
+    expect(result.finalizeDecision).toEqual({
+      shouldScheduleFinalize: true,
+      strategy: "watchdog",
+    });
 
     result = applyRealtimeTurnSequencerEvent(state, {
       type: "input_audio_buffer.speech_stopped",
@@ -124,6 +130,33 @@ describe("realtime-turn-sequencer", () => {
 
     const consumed = consumeRealtimeTurnSequencerState(state, "employee-fallback");
     expect(consumed.transcriptText).toBe("I can check that billing issue for you");
+  });
+
+  it("keeps a watchdog armed when speech started arrived but speech stopped never does", () => {
+    let state = createRealtimeTurnSequencerState();
+
+    let result = applyRealtimeTurnSequencerEvent(state, {
+      type: "input_audio_buffer.speech_started",
+    });
+    state = result.nextState;
+
+    result = applyRealtimeTurnSequencerEvent(state, {
+      type: "conversation.item.input_audio_transcription.completed",
+      itemId: "item_missing_stop",
+      transcriptText: "Let me pull up the account details",
+      fallbackTurnKey: "employee-missing-stop",
+    });
+    state = result.nextState;
+
+    expect(result.mergedTranscript).toBe("Let me pull up the account details");
+    expect(result.finalizeDecision).toEqual({
+      shouldScheduleFinalize: true,
+      strategy: "watchdog",
+    });
+
+    const consumed = consumeRealtimeTurnSequencerState(state, "employee-fallback");
+    expect(consumed.transcriptText).toBe("Let me pull up the account details");
+    expect(consumed.transcriptTurnKey).toBe("employee-missing-stop");
   });
 
   it("ignores duplicate transcript completions for the same realtime item", () => {

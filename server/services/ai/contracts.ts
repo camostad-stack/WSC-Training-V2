@@ -454,6 +454,27 @@ export const evaluationCategoryScoresSchema = z.object({
   closing_control: value.closing_control ?? 0,
 }));
 
+export const evaluationScoreRubricSchema = z.object({
+  name: z.string().trim().min(1).default("Outcome Weighted"),
+  dimension_weights: z.object({
+    interaction_quality: z.number().int().min(0).max(100).default(20),
+    operational_effectiveness: z.number().int().min(0).max(100).default(25),
+    outcome_quality: z.number().int().min(0).max(100).default(55),
+  }),
+}).superRefine((value, ctx) => {
+  const total = value.dimension_weights.interaction_quality
+    + value.dimension_weights.operational_effectiveness
+    + value.dimension_weights.outcome_quality;
+
+  if (total !== 100) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Rubric dimension weights must sum to 100, received ${total}.`,
+      path: ["dimension_weights"],
+    });
+  }
+});
+
 export const evaluationResultSchema = z.object({
   overall_score: z.number().int().min(0).max(100),
   pass_fail: z.string().trim().min(1),
@@ -463,6 +484,14 @@ export const evaluationResultSchema = z.object({
     interaction_quality: z.number().int().min(0).max(100),
     operational_effectiveness: z.number().int().min(0).max(100),
     outcome_quality: z.number().int().min(0).max(100),
+  }),
+  score_rubric: evaluationScoreRubricSchema.default({
+    name: "Outcome Weighted",
+    dimension_weights: {
+      interaction_quality: 20,
+      operational_effectiveness: 25,
+      outcome_quality: 55,
+    },
   }),
   best_moments: z.array(z.string()).default([]),
   missed_moments: z.array(z.string()).default([]),

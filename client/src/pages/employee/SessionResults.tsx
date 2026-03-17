@@ -44,15 +44,15 @@ const scoreDimensionLabels: Record<string, string> = {
 const scoreDimensionDescriptions: Record<string, { description: string; weight: string }> = {
   interaction_quality: {
     description: "How well you communicated, listened, and handled the customer moment to moment.",
-    weight: "20%",
+    weight: "20",
   },
   operational_effectiveness: {
     description: "How clearly you explained the issue, set expectations, and moved the situation forward.",
-    weight: "25%",
+    weight: "25",
   },
   outcome_quality: {
     description: "Whether the issue actually landed in a clean result, valid redirect, or usable next step.",
-    weight: "55%",
+    weight: "55",
   },
 };
 
@@ -68,6 +68,14 @@ export default function SessionResults() {
   const score = evaluation.overall_score || 0;
   const categories = evaluation.category_scores || {};
   const scoreDimensions = evaluation.score_dimensions || null;
+  const scoreRubric = evaluation.score_rubric || {
+    name: "Outcome Weighted",
+    dimension_weights: {
+      interaction_quality: 20,
+      operational_effectiveness: 25,
+      outcome_quality: 55,
+    },
+  };
   const debrief = buildPostCallDebrief({
     stateHistory,
     evaluation,
@@ -135,12 +143,16 @@ export default function SessionResults() {
                 </p>
               </div>
               <Badge variant="outline" className="text-[10px] font-mono border-border shrink-0">
-                Outcome Weighted
+                {scoreRubric.name}
               </Badge>
             </div>
             <div className="space-y-3">
               {Object.entries(scoreDimensions).map(([key, value]) => (
                 <div key={key} className="rounded-xl border border-border bg-background/40 p-3">
+                  {(() => {
+                    const rubricWeight = scoreRubric.dimension_weights?.[key as keyof typeof scoreRubric.dimension_weights];
+                    return (
+                      <>
                   <div className="flex justify-between items-start gap-3 text-xs mb-2">
                     <div>
                       <div className="text-foreground font-medium">{scoreDimensionLabels[key] || key}</div>
@@ -151,7 +163,7 @@ export default function SessionResults() {
                     <div className="text-right shrink-0">
                       <div className="font-mono text-foreground">{value}/100</div>
                       <div className="text-[10px] text-muted-foreground font-mono">
-                        Weight {scoreDimensionDescriptions[key]?.weight || "--"}
+                        Weight {rubricWeight ?? scoreDimensionDescriptions[key]?.weight ?? "--"}%
                       </div>
                     </div>
                   </div>
@@ -165,6 +177,9 @@ export default function SessionResults() {
                         ? "This score reflects whether you moved the issue forward in a practical, usable way."
                         : "This score reflects the quality of your customer handling and communication."}
                   </div>
+                      </>
+                    );
+                  })()}
                 </div>
               ))}
             </div>

@@ -803,6 +803,89 @@ describe("simulator.evaluate", () => {
     expect(result.coaching.employee_coaching_summary).toContain("ownership");
   });
 
+  it("keeps scoring the session when the low-effort detector fails", async () => {
+    ENV.forgeApiKey = "test-forge-key";
+
+    mockLLMResponse({
+      policy_accuracy: "partially_correct",
+      matched_policy_points: ["Referenced a concrete billing next step."],
+      missed_policy_points: [],
+      invented_or_risky_statements: [],
+      should_have_escalated: false,
+      policy_notes: "Policy grounding succeeded.",
+    });
+    mockInvokeLLM.mockRejectedValueOnce(new Error("low-effort detector unavailable"));
+    mockLLMResponse({
+      overall_score: 76,
+      pass_fail: "borderline",
+      readiness_signal: "shadow_ready",
+      category_scores: {
+        opening_warmth: 6,
+        listening_empathy: 7,
+        clarity_directness: 7,
+        policy_accuracy: 7,
+        ownership: 8,
+        problem_solving: 7,
+        de_escalation: 6,
+        escalation_judgment: 6,
+        visible_professionalism: 0,
+        closing_control: 7,
+      },
+      score_dimensions: {
+        interaction_quality: 73,
+        operational_effectiveness: 75,
+        outcome_quality: 79,
+      },
+      best_moments: ["Took ownership and explained the next step."],
+      missed_moments: ["Could have named the callback timeline faster."],
+      critical_mistakes: [],
+      coachable_mistakes: ["State the callback time earlier."],
+      most_important_correction: "Name the billing owner and callback time earlier.",
+      ideal_response_example: "I can see one pending charge and one final charge, and billing will update you by 3 PM today.",
+      summary: "A mostly solid billing explanation with a usable next step.",
+    });
+    mockLLMResponse({
+      employee_coaching_summary: "You moved the billing issue forward with a usable next step.",
+      what_you_did_well: ["Took ownership quickly."],
+      what_hurt_you: ["Delayed the timeline."],
+      do_this_next_time: ["Name the callback time earlier."],
+      replacement_phrases: ["Billing will update you by 3 PM today."],
+      practice_focus: "timeline_control",
+      next_recommended_scenario: "repeat_current_scenario",
+    });
+    mockLLMResponse({
+      manager_summary: "The rep handled the issue well overall and should tighten timeline control.",
+      performance_signal: "yellow",
+      top_strengths: ["Ownership"],
+      top_corrections: ["Earlier timeline clarity"],
+      whether_live_shadowing_is_needed: false,
+      whether_manager_follow_up_is_needed: false,
+      recommended_follow_up_action: "Coach on naming owner and timeline faster.",
+      recommended_next_drill: "timeline_control",
+    });
+
+    const caller = appRouter.createCaller(createAuthContext());
+    const result = await caller.simulator.evaluate({
+      scenarioJson: createScenarioFixture(),
+      transcript: [
+        { role: "customer", message: "Why are there two charges on my account?" },
+        { role: "employee", message: "I can see one pending charge and one final charge, and I am escalating this to billing today." },
+        { role: "customer", message: "Okay, when am I hearing back?" },
+        { role: "employee", message: "You will hear back by 3 PM today." },
+      ],
+      employeeRole: "Front Desk Associate",
+    }) as any;
+
+    expect(result.processingStatus).toBe("completed");
+    expect(result.failure).toBeUndefined();
+    expect(result.sessionQuality.session_quality).toBe("usable");
+    expect(result.sessionQuality.flags).toContain("quality_gate_unavailable");
+    expect(result.sessionQuality.reason).toContain("scoring continued without a quality-gate retry recommendation");
+    expect(result.evaluation.overall_score).toBeGreaterThan(0);
+    expect(result.evaluation.score_rubric.name).toBe("Outcome Weighted");
+    expect(result.coaching.employee_coaching_summary).toContain("usable next step");
+  });
+
   it("falls back to deterministic coaching and manager debrief when those prompts fail", async () => {
     ENV.forgeApiKey = "test-forge-key";
 

@@ -348,6 +348,14 @@ export interface EvaluationResult {
     operational_effectiveness: number;
     outcome_quality: number;
   };
+  score_rubric?: {
+    name: string;
+    dimension_weights: {
+      interaction_quality: number;
+      operational_effectiveness: number;
+      outcome_quality: number;
+    };
+  };
   best_moments: string[];
   missed_moments: string[];
   critical_mistakes: string[];

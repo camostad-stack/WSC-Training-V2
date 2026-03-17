@@ -54,6 +54,23 @@ function buildFinalizeDecision(state: RealtimeTurnSequencerState): RealtimeTrans
   });
 }
 
+function buildTranscriptCompletionFinalizeDecision(
+  state: RealtimeTurnSequencerState,
+): RealtimeTranscriptFinalizeDecision {
+  if (state.pendingTranscriptSegments.length === 0) {
+    return { shouldScheduleFinalize: false, strategy: "none" };
+  }
+
+  // Realtime occasionally delivers a completed transcript before the matching
+  // speech-stopped signal. Keep a watchdog armed so a missed stop does not
+  // strand the turn forever.
+  if (!state.observedSpeechStopForPendingTurn) {
+    return { shouldScheduleFinalize: true, strategy: "watchdog" };
+  }
+
+  return buildFinalizeDecision(state);
+}
+
 export function applyRealtimeTurnSequencerEvent(
   state: RealtimeTurnSequencerState,
   event: RealtimeTurnSequencerEvent,
@@ -119,7 +136,7 @@ export function applyRealtimeTurnSequencerEvent(
     mergedTranscript: mergeRealtimeTranscriptSegments(nextState.pendingTranscriptSegments),
     pendingTurnKey: nextState.pendingTurnKey,
     duplicateTranscriptIgnored: false,
-    finalizeDecision: buildFinalizeDecision(nextState),
+    finalizeDecision: buildTranscriptCompletionFinalizeDecision(nextState),
   };
 }
 

@@ -373,6 +373,77 @@ describe("simulation engine", () => {
     expect(result.stateUpdate.continue_simulation).toBe(false);
   });
 
+  it("closes a reservation issue when the employee offers a concrete recovered slot and confirmation timing", () => {
+    const result = runTurn({
+      scenario: createScenario({
+        scenario_family: "reservation_issue",
+        opening_line: "I booked this slot and now you're telling me there's nothing open?",
+        hidden_facts: ["A later opening is available if the employee checks and offers it clearly."],
+        completion_criteria: [
+          "reservation status is explained clearly",
+          "customer knows the exact recovery or escalation path",
+        ],
+      }),
+      transcript: [{ role: "customer", message: "I booked this slot and now you're telling me there's nothing open?" }],
+      employeeResponse: "The original slot is no longer available, but I can move you into the 5:30 court, hold it now, and send the updated confirmation in the next 10 minutes.",
+    });
+
+    expect(result.stateUpdate.complaint_category).toBe("schedule_or_program");
+    expect(result.stateUpdate.terminal_outcome_state).toBe("RESOLVED");
+    expect(result.stateUpdate.continue_simulation).toBe(false);
+    expect(result.stateUpdate.next_step_action.toLowerCase()).toContain("move");
+  });
+
+  it("accepts a named coach callback as a valid next step for lesson inquiry scenarios", () => {
+    const result = runTurn({
+      scenario: createScenario({
+        department: "golf",
+        employee_role: "Golf Membership Advisor",
+        scenario_family: "lesson_inquiry",
+        opening_line: "I don't know whether I need private instruction or something more basic first.",
+        hidden_facts: ["The prospect mostly needs the right lesson recommendation and a clear booking path."],
+        completion_criteria: [
+          "customer knows what lesson path to take next",
+          "customer acknowledged next step or escalation",
+        ],
+      }),
+      transcript: [
+        { role: "customer", message: "I don't know whether I need private instruction or something more basic first." },
+        { role: "employee", message: "What are you hoping to get out of lessons most right now?" },
+        { role: "customer", message: "I mostly need help getting started, and I don't want to waste money on the wrong format." },
+      ],
+      employeeResponse: "Based on what you told me, the best fit is a starter private lesson. Coach Maya will call you by 2 PM and get your first session booked.",
+    });
+
+    expect(result.stateUpdate.complaint_category).toBe("schedule_or_program");
+    expect(result.stateUpdate.accepted_next_step).toBe(true);
+    expect(result.stateUpdate.next_step_owner).toBe("coach");
+    expect(result.stateUpdate.terminal_outcome_state).toBe("RESOLVED");
+    expect(result.stateUpdate.continue_simulation).toBe(false);
+  });
+
+  it("closes a recurring service complaint when the follow-up owner and callback window are concrete", () => {
+    const result = runTurn({
+      scenario: createScenario({
+        scenario_family: "member_complaint",
+        opening_line: "I've brought this up before, and I'm tired of repeating myself every time I come in.",
+        hidden_facts: ["The complaint is recurring, and the member mainly wants a real owner and callback date."],
+        completion_criteria: [
+          "complaint itself was addressed directly",
+          "customer acknowledged next step or escalation",
+          "employee gave ownership or redirect",
+        ],
+      }),
+      transcript: [{ role: "customer", message: "I've brought this up before, and I'm tired of repeating myself every time I come in." }],
+      employeeResponse: "This should not have kept happening. I'm logging it for the operations team now, and they will call you by 4 PM today with the follow-up.",
+    });
+
+    expect(result.stateUpdate.complaint_category).toBe("service_complaint");
+    expect(result.stateUpdate.accepted_next_step).toBe(true);
+    expect(result.stateUpdate.terminal_outcome_state).toBe("RESOLVED");
+    expect(result.stateUpdate.continue_simulation).toBe(false);
+  });
+
   it("keeps a polished but unresolved conversation open across multiple turns", () => {
     const transcript: TranscriptTurn[] = [
       { role: "customer", message: "I need to know why I was charged twice." },

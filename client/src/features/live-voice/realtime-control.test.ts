@@ -54,7 +54,8 @@ describe("resolveRealtimeResponseCompletion", () => {
     expect(getRealtimeEmployeeTurnFinalizeDelay("Yes, so I can")).toBe(5600);
     expect(getRealtimeEmployeeTurnFinalizeDelay("I can explain the two charges, and")).toBe(4200);
     expect(looksLikeIncompleteEmployeeTurn("Yes, I can do that.")).toBe(false);
-    expect(getRealtimeEmployeeTurnFinalizeDelay("Yes, I can do that.")).toBe(1500);
+    expect(getRealtimeEmployeeTurnFinalizeDelay("Yes, I can do that.")).toBe(1000);
+    expect(getRealtimeEmployeeTurnFinalizeDelay("Yep")).toBe(1900);
   });
 
   it("does not finalize a pending transcript until speech has actually stopped", () => {

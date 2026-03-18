@@ -326,8 +326,8 @@ function buildComplaintRequirementSet(scenario: ScenarioDirectorResult): Complai
 function inferNextStepOwner(analysis: EmployeeUtteranceAnalysis, employeeMessage: string) {
   if (analysis.explicitManagerMention) return "manager";
   if (analysis.tookOwnership || analysis.explicitOwnership) return "employee";
-  if (/\b(billing team|membership team|coach|front desk|supervisor|team lead)\b/i.test(employeeMessage)) {
-    return employeeMessage.match(/\b(billing team|membership team|coach|front desk|supervisor|team lead)\b/i)?.[0].toLowerCase() || "team";
+  if (/\b(billing team|membership team|operations team|service team|coach|front desk|supervisor|team lead|lessons coordinator|lesson coordinator)\b/i.test(employeeMessage)) {
+    return employeeMessage.match(/\b(billing team|membership team|operations team|service team|coach|front desk|supervisor|team lead|lessons coordinator|lesson coordinator)\b/i)?.[0].toLowerCase() || "team";
   }
   if (analysis.explicitDirection) return "customer";
   return "";
@@ -335,11 +335,11 @@ function inferNextStepOwner(analysis: EmployeeUtteranceAnalysis, employeeMessage
 
 function inferNextStepTimeline(analysis: EmployeeUtteranceAnalysis, employeeMessage: string) {
   if (!analysis.explicitTimeline) return "";
-  return employeeMessage.match(/\b(within \d+[^.?!,;]*|in \d+[^.?!,;]*|today|this afternoon|this morning|tomorrow|before you leave|by end of day|within the hour|in a few minutes)\b/i)?.[0]?.trim() || "employee provided a concrete timeline";
+  return employeeMessage.match(/\b(within \d+[^.?!,;]*|in \d+[^.?!,;]*|in the next \d+[^.?!,;]*|today|this afternoon|this morning|this evening|tonight|tomorrow|first thing tomorrow|before you leave|before noon|by noon|by end of day|by close|within the hour|in a few minutes|by \d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i)?.[0]?.trim() || "employee provided a concrete timeline";
 }
 
 function inferNextStepAction(analysis: EmployeeUtteranceAnalysis, employeeMessage: string) {
-  const match = employeeMessage.match(/\b(refund|credit|reverse|correction|correct|investigate|investigation|submit|process|confirm|email|call|rebook|book|reserve|waitlist|cancel|check with|handle|review|update|escalate|transfer|set up|walk you through|get (?:this|that|the next step|you) started|get (?:this|that|the next step) moving|schedule|show you|introduce you|line up|arrange|send over|start)\b[^.?!,;]*/i);
+  const match = employeeMessage.match(/\b(refund|credit|reverse|correction|correct|investigate|investigation|submit|process|confirm|email|call|document|log|flag|route|rebook|book|reserve|waitlist|hold|move|shift|fit you in|get you into|lock in|restore|rebuild|freeze|cancel|check with|handle|review|update|escalate|transfer|set up|walk you through|get (?:this|that|the next step|you) started|get (?:this|that|the next step) moving|schedule|show you|introduce you|line up|arrange|send|send over|start)\b[^.?!,;]*/i);
   if (match?.[0]) {
     return match[0].replace(/\s+/g, " ").trim();
   }
@@ -367,10 +367,23 @@ function hasConcreteAction(analysis: EmployeeUtteranceAnalysis, normalizedMessag
     /\bconfirm\b/,
     /\bemail\b/,
     /\bcall\b/,
+    /\bdocument\b/,
+    /\blog\b/,
+    /\bflag\b/,
+    /\broute\b/,
     /\brebook\b/,
     /\bbook\b/,
     /\breserve\b/,
     /\bwaitlist\b/,
+    /\bhold\b/,
+    /\bmove\b/,
+    /\bshift\b/,
+    /\bfit you in\b/,
+    /\bget you into\b/,
+    /\block in\b/,
+    /\brestore\b/,
+    /\brebuild\b/,
+    /\bfreeze\b/,
     /\bcancel\b/,
     /\bcheck with\b/,
     /\bhandle\b/,
@@ -384,6 +397,7 @@ function hasConcreteAction(analysis: EmployeeUtteranceAnalysis, normalizedMessag
     /\bintroduce you\b/,
     /\bline up\b/,
     /\barrange\b/,
+    /\bsend\b/,
     /\bsend over\b/,
     /\bstart\b/,
   ]);
@@ -408,6 +422,26 @@ function buildNextStepMissingFields(params: {
     actionConcrete,
     missingFields: missing,
   };
+}
+
+function hasUnresolvedConditionalPath(params: {
+  category: ComplaintCategory;
+  normalizedMessage: string;
+}) {
+  if (params.category !== "schedule_or_program") {
+    return false;
+  }
+
+  return hasAnyPattern(params.normalizedMessage, [
+    /\bif the slot is open\b/,
+    /\bif it can be restored\b/,
+    /\bif it opens up\b/,
+    /\bdepending on availability\b/,
+    /\buntil we know whether\b/,
+    /\bonce we know whether\b/,
+    /\bchecking whether\b/,
+    /\bwhether it can be restored\b/,
+  ]);
 }
 
 function escalationIsAppropriate(params: {
@@ -572,15 +606,21 @@ function assessComplaintSignals(params: {
       break;
     }
     case "schedule_or_program": {
+      const conditionalRecoveryPath = hasUnresolvedConditionalPath({
+        category: params.category,
+        normalizedMessage,
+      });
       statusClarified = params.analysis.explicitExplanation
         || params.analysis.explicitVerification
         || hasAnyPattern(normalizedMessage, [/\bschedule\b/, /\breservation\b/, /\bbooking\b/, /\bclass\b/, /\blesson\b/, /\bprogram\b/, /\bslot\b/, /\btime\b/]);
       factsConfirmed = params.analysis.explicitVerification
+        || params.analysis.explicitRecommendation
         || hasAnyPattern(normalizedMessage, [/\bavailable\b/, /\bconfirmed\b/, /\bfull\b/, /\bwaitlist\b/, /\bcancelled\b/, /\bmoved\b/, /\bnot on\b/])
+        || hasAnyPattern(normalizedMessage, [/\bbest fit\b/, /\brecommend\b/, /\bprivate lesson\b/, /\bgroup lesson\b/, /\bintro lesson\b/, /\bstarter lesson\b/])
         || confirmedBusinessFacts.length > 0;
       pathForwardExplained = pathForwardExplained
-        || hasAnyPattern(normalizedMessage, [/\brebook\b/, /\bbook\b/, /\breserve\b/, /\bwaitlist\b/, /\bslot\b/, /\bcoach\b/, /\bavailable\b/]);
-      directResolutionSatisfied = statusClarified && factsConfirmed && pathForwardExplained;
+        || hasAnyPattern(normalizedMessage, [/\brebook\b/, /\bbook\b/, /\breserve\b/, /\bwaitlist\b/, /\bslot\b/, /\bcoach\b/, /\bavailable\b/, /\bhold\b/, /\bmove\b/, /\bshift\b/, /\brestore\b/, /\brebuild\b/, /\bsend\b/, /\bemail\b/, /\bcall\b/, /\bupdated confirmation\b/]);
+      directResolutionSatisfied = statusClarified && factsConfirmed && pathForwardExplained && !conditionalRecoveryPath;
 
       if (!statusClarified) {
         unresolvedSubissues.push("The customer still does not know the correct schedule or program status.");
@@ -593,6 +633,10 @@ function assessComplaintSignals(params: {
       if (!pathForwardExplained) {
         unresolvedSubissues.push("The customer still does not have a concrete booking or recovery path.");
         unresolvedCustomerQuestions.push("What exactly should I do next?");
+      }
+      if (conditionalRecoveryPath) {
+        unresolvedSubissues.push("The recovery path still depends on availability or another unresolved check.");
+        unresolvedCustomerQuestions.push("Do we actually have the slot or recovery option confirmed yet?");
       }
       break;
     }
@@ -619,7 +663,9 @@ function assessComplaintSignals(params: {
     case "service_complaint": {
       statusClarified = params.analysis.explicitExplanation || params.analysis.answeredQuestion || params.analysis.empathy >= 5;
       factsConfirmed = params.analysis.explicitVerification || params.analysis.tookOwnership || confirmedBusinessFacts.length > 0;
-      pathForwardExplained = pathForwardExplained || params.analysis.tookOwnership;
+      pathForwardExplained = pathForwardExplained
+        || params.analysis.tookOwnership
+        || hasAnyPattern(normalizedMessage, [/\bdocument\b/, /\blog\b/, /\bflag\b/, /\broute\b/, /\bfollow up\b/, /\breach out\b/, /\bcall\b/, /\bemail\b/, /\breview\b/]);
       directResolutionSatisfied = false;
 
       if (!statusClarified) {
@@ -761,12 +807,21 @@ function completionCriterionSatisfied(params: {
   if (criterion.includes("ownership") || criterion.includes("redirect")) {
     return params.analysis.tookOwnership || params.evidence.validRedirect;
   }
+  if (criterion.includes("addressed directly") || criterion.includes("complaint itself")) {
+    return params.evidence.statusClarified;
+  }
   if (criterion.includes("next step")) {
     return params.evidence.acceptedNextStep
       || (
         params.evidence.nextStepMissingFields.length === 0
         && Boolean(params.evidence.nextStepOwner || params.evidence.nextStepAction || params.evidence.nextStepTimeline)
       );
+  }
+  if ((criterion.includes("recovery") && criterion.includes("path")) || criterion.includes("booking path") || criterion.includes("follow-up path")) {
+    return params.evidence.acceptedNextStep || params.evidence.validRedirect || params.evidence.pathForwardExplained;
+  }
+  if (criterion.includes("lesson path")) {
+    return params.evidence.pathForwardExplained && (params.evidence.statusClarified || params.evidence.factsConfirmed);
   }
   if (criterion.includes("care arrives") || criterion.includes("next update")) {
     return Boolean(params.evidence.nextStepTimeline) || params.evidence.directResolutionSatisfied;
@@ -789,7 +844,7 @@ function completionCriterionSatisfied(params: {
   if (criterion.includes("cancel") && params.evidence.complaintCategory === "cancellation") {
     return params.evidence.statusClarified && params.evidence.factsConfirmed;
   }
-  if ((criterion.includes("schedule") || criterion.includes("program") || criterion.includes("booking")) && params.evidence.complaintCategory === "schedule_or_program") {
+  if ((criterion.includes("schedule") || criterion.includes("program") || criterion.includes("booking") || criterion.includes("reservation") || criterion.includes("lesson") || criterion.includes("class")) && params.evidence.complaintCategory === "schedule_or_program") {
     return params.evidence.statusClarified && params.evidence.factsConfirmed;
   }
   if (criterion.includes("resolve")) {
@@ -934,12 +989,19 @@ export function evaluateComplaintOutcome(params: {
     nextStepAction,
     nextStepTimeline,
   });
+  const hasNamedOperationalOwner = Boolean(nextStepOwner) && nextStepOwner !== "customer";
+  const unresolvedConditionalPath = hasUnresolvedConditionalPath({
+    category: requirements.category,
+    normalizedMessage,
+  });
   const acceptedNextStep = nextStepSnapshot.missingFields.length === 0
     && (
       params.analysis.tookOwnership
       || params.analysis.explicitManagerMention
+      || hasNamedOperationalOwner
       || (requirements.category === "emergency" && params.analysis.explicitDirection)
     )
+    && !unresolvedConditionalPath
     && params.analysis.helpfulness >= (requirements.category === "emergency" ? 5 : 6)
     && params.analysis.clarity >= (requirements.category === "emergency" ? 5 : 6)
     && !params.analysis.avoidedQuestion

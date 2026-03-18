@@ -51,10 +51,10 @@ export function getRealtimeEmployeeTurnFinalizeDelay(text: string) {
   }
 
   if (!/[.!?]["']?$/.test(normalized) && wordCount <= 4) {
-    return 2400;
+    return 1900;
   }
 
-  return 1500;
+  return 1000;
 }
 
 export function resolveRealtimeTranscriptFinalize(params: {

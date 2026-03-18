@@ -73,17 +73,40 @@ const OWNERSHIP_PATTERNS = [
   /\btaking ownership\b/i,
   /\btake control\b/i,
   /\btaking control\b/i,
-  /\bi am (sending|processing|correcting|fixing|reviewing|checking|escalating)\b/i,
-  /\bi'm (sending|processing|correcting|fixing|reviewing|checking|escalating)\b/i,
-  /\bi can (start|send|process|fix|correct|escalate|get .* moving|get .* started)\b/i,
+  /\bi am (sending|emailing|calling|processing|correcting|fixing|reviewing|checking|escalating|documenting|logging|flagging|routing|booking|rebooking|holding|moving|shifting)\b/i,
+  /\bi'm (sending|emailing|calling|processing|correcting|fixing|reviewing|checking|escalating|documenting|logging|flagging|routing|booking|rebooking|holding|moving|shifting)\b/i,
+  /\bi can (start|send|email|call|process|fix|correct|escalate|book|rebook|reserve|hold|move|shift|document|log|flag|route|get .* moving|get .* started|get .* booked)\b/i,
 ];
 const PROFESSIONAL_PATTERNS = [/\blet me walk you through\b/i, /\bhere is what i can do\b/i, /\bhere is what happens next\b/i, /\bthe next step\b/i, /\bconfirmation\b/i];
-const TIMELINE_PATTERNS = [/\bwithin\b/i, /\btoday\b/i, /\bthis afternoon\b/i, /\bthis morning\b/i, /\bminutes\b/i, /\bhours\b/i, /\bbefore you leave\b/i, /\bnext update\b/i, /\byou will hear\b/i, /\buntil care arrives\b/i, /\buntil help arrives\b/i];
+const TIMELINE_PATTERNS = [
+  /\bwithin\b/i,
+  /\btoday\b/i,
+  /\bthis afternoon\b/i,
+  /\bthis morning\b/i,
+  /\bthis evening\b/i,
+  /\btonight\b/i,
+  /\bminutes\b/i,
+  /\bhours\b/i,
+  /\bbefore you leave\b/i,
+  /\bbefore noon\b/i,
+  /\bby noon\b/i,
+  /\bby end of day\b/i,
+  /\bby close\b/i,
+  /\bfirst thing tomorrow\b/i,
+  /\bin the next \d+\s*(?:minute|minutes|hour|hours)\b/i,
+  /\bby \d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i,
+  /\bnext update\b/i,
+  /\byou will hear\b/i,
+  /\buntil care arrives\b/i,
+  /\buntil help arrives\b/i,
+];
 const VERIFICATION_PATTERNS = [/\bcheck\b/i, /\bverify\b/i, /\breview\b/i, /\bconfirm\b/i, /\bpull up\b/i, /\blook into\b/i, /\baccount\b/i, /\bledger\b/i, /\breservation\b/i, /\bbooking\b/i];
 const EXPLANATION_PATTERNS = [
   /\bhere'?s what happened\b/i,
   /\bthat means\b/i,
   /\bthe reason\b/i,
+  /\bshould(?: not|n't) have (?:kept )?happen(?:ed|ing)\b/i,
+  /\bthat should(?: not|n't) have happened\b/i,
   /\bpending\b/i,
   /\bfinal\b/i,
   /\bstatus\b/i,
@@ -94,7 +117,36 @@ const EXPLANATION_PATTERNS = [
   /\byour current membership\b/i,
   /\byour membership includes\b/i,
 ];
-const NEXT_STEP_PATTERNS = [/\bnext step\b/i, /\brefund\b/i, /\bcredit\b/i, /\brebook\b/i, /\bbook\b/i, /\bschedule\b/i, /\bwalk you through\b/i, /\bset that up\b/i, /\bfollow up\b/i, /\bconfirmation\b/i, /\bmanager will\b/i, /\bcorrection\b/i, /\bfix this\b/i, /\bsend(?:ing)?\b/i, /\bprocess(?:ing)?\b/i];
+const NEXT_STEP_PATTERNS = [
+  /\bnext step\b/i,
+  /\brefund\b/i,
+  /\bcredit\b/i,
+  /\brebook\b/i,
+  /\bbook\b/i,
+  /\bschedule\b/i,
+  /\bwalk you through\b/i,
+  /\bset that up\b/i,
+  /\bconfirmation\b/i,
+  /\bmanager will\b/i,
+  /\bcorrection\b/i,
+  /\bfix this\b/i,
+  /\bsend(?:ing)?\b/i,
+  /\bemail(?:ing)?\b/i,
+  /\bcall(?:ing)?\b/i,
+  /\bdocument(?:ing)?\b/i,
+  /\blog(?:ging)?\b/i,
+  /\bflag(?:ging)?\b/i,
+  /\broute(?:ing)?\b/i,
+  /\bhold(?:ing)?\b/i,
+  /\bmove(?:ing)?\b/i,
+  /\bshift(?:ing)?\b/i,
+  /\block in\b/i,
+  /\brestore\b/i,
+  /\brebuild\b/i,
+  /\bfreeze\b/i,
+  /\bupdate\b/i,
+  /\bprocess(?:ing)?\b/i,
+];
 const DISCOVERY_PATTERNS = [/\bwhat are you looking for\b/i, /\bwhat matters most\b/i, /\bhow often\b/i, /\btell me about\b/i, /\bwhat kind of\b/i, /\bwhat are you hoping\b/i, /\bwhat do you want out of\b/i];
 const RECOMMENDATION_PATTERNS = [/\brecommend\b/i, /\bbest fit\b/i, /\bi'?d suggest\b/i, /\bfor someone like you\b/i, /\bhere'?s the best option\b/i];
 const SAFETY_PATTERNS = [/\b911\b/i, /\bems\b/i, /\bemergency\b/i, /\bsecure\b/i, /\bblock off\b/i, /\btag out\b/i, /\bout of use\b/i, /\bstabilize\b/i, /\bcare arrives\b/i, /\bclear the area\b/i];
@@ -397,6 +449,9 @@ export function analyzeEmployeeUtterance(
   const repetitiveResponse = (context.previousEmployeeMessages || []).some(
     (priorMessage) => jaccardSimilarity(priorMessage, text) >= 0.72,
   );
+  const priorDiscoveryOccurred = (context.previousEmployeeMessages || []).some((priorMessage) => (
+    testAny(priorMessage, DISCOVERY_PATTERNS) || (scenario.department === "golf" && /\?/.test(priorMessage))
+  ));
   const deliveryAnalysis = context.deliveryAnalysis;
   const rushedRisk = deliveryAnalysis?.delivery?.rushedRisk || "low";
   const hesitationRisk = deliveryAnalysis?.pacing?.hesitationRisk || "low";
@@ -574,7 +629,7 @@ export function analyzeEmployeeUtterance(
   if (scenario.scenario_family === "billing_confusion" && /call your bank/i.test(text)) accuracy = 1;
   if (scenario.scenario_family === "unsafe_equipment_report" && /still let people use it/i.test(lower)) accuracy = 1;
   if (scenario.department === "mod_emergency" && !safetyAction && !direction && /policy|report/i.test(lower)) accuracy -= 2;
-  if (scenario.department === "golf" && recommendation && !discovery) helpfulness -= 1;
+  if (scenario.department === "golf" && recommendation && !discovery && !priorDiscoveryOccurred) helpfulness -= 1;
 
   const setExpectationsClearly = nextStep && timeline;
   const baseAnsweredQuestion = expectation.needsFacts

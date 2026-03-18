@@ -1,15 +1,16 @@
 import { trpc } from "@/lib/trpc";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, Plus, Zap } from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, Loader2, Plus, Sparkles, Zap } from "lucide-react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { departmentLabels, familyLabels } from "@/features/simulator/config";
 
@@ -32,10 +33,24 @@ const complexityOptions = [
   { value: "ambiguous", label: "Ambiguous" },
 ] as const;
 
+function splitLines(value: string) {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 export default function ManagerScenarios() {
   const utils = trpc.useUtils();
   const [departmentFilter, setDepartmentFilter] = useState<(typeof departmentOptions)[number]["value"]>("all");
   const [open, setOpen] = useState(false);
+  const [quickAdvancedOpen, setQuickAdvancedOpen] = useState(false);
+  const [quickForm, setQuickForm] = useState({
+    brief: "",
+    supportingContext: "",
+    department: "auto" as "auto" | Exclude<(typeof departmentOptions)[number]["value"], "all">,
+    difficulty: "auto" as "auto" | "1" | "2" | "3" | "4" | "5",
+  });
   const [form, setForm] = useState({
     title: "",
     department: "customer_service" as Exclude<(typeof departmentOptions)[number]["value"], "all">,
@@ -61,6 +76,26 @@ export default function ManagerScenarios() {
 
   const queryInput = departmentFilter === "all" ? {} : { department: departmentFilter };
   const scenarios = trpc.scenarios.list.useQuery(queryInput, { retry: false });
+
+  const createFromBriefMutation = trpc.scenarios.createFromBrief.useMutation({
+    onSuccess: (result) => {
+      toast.success(
+        result.usedFallback
+          ? `Saved "${result.template.title}" from the fallback scenario catalog.`
+          : `Generated and saved "${result.template.title}".`,
+      );
+      setQuickForm({
+        brief: "",
+        supportingContext: "",
+        department: "auto",
+        difficulty: "auto",
+      });
+      setQuickAdvancedOpen(false);
+      utils.scenarios.list.invalidate();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
   const createMutation = trpc.scenarios.create.useMutation({
     onSuccess: () => {
       toast.success("Scenario created");
@@ -91,6 +126,7 @@ export default function ManagerScenarios() {
     },
     onError: (error) => toast.error(error.message),
   });
+
   const updateMutation = trpc.scenarios.update.useMutation({
     onSuccess: () => {
       toast.success("Scenario updated");
@@ -98,6 +134,64 @@ export default function ManagerScenarios() {
     },
     onError: (error) => toast.error(error.message),
   });
+
+  const scenarioCountLabel = useMemo(() => {
+    const count = scenarios.data?.length ?? 0;
+    return `${count} scenario template${count === 1 ? "" : "s"}`;
+  }, [scenarios.data]);
+
+  function submitQuickScenario() {
+    if (quickForm.brief.trim().length < 12) {
+      toast.error("Give the generator a short scenario brief so it has something real to build from.");
+      return;
+    }
+
+    createFromBriefMutation.mutate({
+      brief: quickForm.brief.trim(),
+      supportingContext: quickForm.supportingContext.trim() || undefined,
+      department: quickForm.department === "auto" ? undefined : quickForm.department,
+      difficulty: quickForm.difficulty === "auto" ? undefined : Number(quickForm.difficulty),
+      mode: "in_person",
+    });
+  }
+
+  function submitManualTemplate() {
+    if (
+      !form.title.trim() ||
+      !form.scenarioFamily.trim() ||
+      !form.targetRole.trim() ||
+      !form.situationSummary.trim() ||
+      !form.openingLine.trim()
+    ) {
+      toast.error("Title, family, target role, summary, and opening line are required");
+      return;
+    }
+
+    createMutation.mutate({
+      title: form.title.trim(),
+      department: form.department,
+      scenarioFamily: form.scenarioFamily.trim(),
+      targetRole: form.targetRole.trim(),
+      difficulty: form.difficulty,
+      emotionalIntensity: form.emotionalIntensity,
+      complexity: form.complexity,
+      customerPersona: {
+        name: form.customerName.trim() || "Guest",
+        age_band: form.customerAgeBand.trim() || "adult",
+        membership_context: form.membershipContext.trim() || "member",
+        communication_style: form.communicationStyle.trim() || "direct",
+        initial_emotion: form.initialEmotion.trim() || "frustrated",
+        patience_level: form.patienceLevel.trim() || "medium",
+      },
+      situationSummary: form.situationSummary.trim(),
+      openingLine: form.openingLine.trim(),
+      hiddenFacts: splitLines(form.hiddenFacts),
+      approvedResolutionPaths: splitLines(form.approvedResolutionPaths),
+      requiredBehaviors: splitLines(form.requiredBehaviors),
+      criticalErrors: splitLines(form.criticalErrors),
+      recommendedTurns: form.recommendedTurns,
+    });
+  }
 
   if (scenarios.isLoading) {
     return <div className="flex items-center justify-center h-48"><Loader2 className="h-6 w-6 animate-spin text-teal" /></div>;
@@ -120,7 +214,7 @@ export default function ManagerScenarios() {
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Scenario Library</h1>
-          <p className="text-sm text-muted-foreground mt-1">{data.length} scenario template{data.length !== 1 ? "s" : ""}</p>
+          <p className="text-sm text-muted-foreground mt-1">{scenarioCountLabel}</p>
         </div>
         <div className="flex items-center gap-3">
           <Select value={departmentFilter} onValueChange={(value) => setDepartmentFilter(value as (typeof departmentOptions)[number]["value"])}>
@@ -135,12 +229,111 @@ export default function ManagerScenarios() {
               ))}
             </SelectContent>
           </Select>
-          <Button onClick={() => setOpen(true)} className="bg-teal text-slate-deep hover:bg-teal/90 gap-2">
+          <Button variant="outline" onClick={() => setOpen(true)} className="gap-2 border-border">
             <Plus className="h-4 w-4" />
-            New Scenario
+            Advanced Template
           </Button>
         </div>
       </div>
+
+      <Card className="bg-card border-border">
+        <CardContent className="space-y-4 p-5">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <Sparkles className="h-4 w-4 text-teal" />
+                <h2 className="text-sm font-semibold">Quick Scenario Generator</h2>
+              </div>
+              <p className="text-sm text-muted-foreground max-w-2xl">
+                Describe the scenario you want to train. We&apos;ll infer the department and scenario family, pull active policy context automatically,
+                and turn it into a normal scenario template for the simulator.
+              </p>
+            </div>
+            <Badge variant="outline" className="border-0 bg-teal/10 text-teal">
+              Simple Flow
+            </Badge>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">What do you want this scenario to train?</Label>
+            <Textarea
+              value={quickForm.brief}
+              onChange={(event) => setQuickForm((current) => ({ ...current, brief: event.target.value }))}
+              placeholder="Example: A longtime member thinks they were charged twice and wants a real answer, not a vague promise. Test ownership, billing clarity, and next-step setting."
+              className="bg-background border-border min-h-28"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Supporting policy, notes, or pasted document text (optional)</Label>
+            <Textarea
+              value={quickForm.supportingContext}
+              onChange={(event) => setQuickForm((current) => ({ ...current, supportingContext: event.target.value }))}
+              placeholder="Paste any extra context, policy notes, process details, or real-world language you want the generator to use."
+              className="bg-background border-border min-h-28"
+            />
+          </div>
+
+          <Collapsible open={quickAdvancedOpen} onOpenChange={setQuickAdvancedOpen} className="border border-border rounded-lg">
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" className="w-full justify-between rounded-lg px-4 py-3">
+                <span className="text-sm">Advanced overrides</span>
+                <ChevronDown className={`h-4 w-4 transition-transform ${quickAdvancedOpen ? "rotate-180" : ""}`} />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="px-4 pb-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                <div>
+                  <Label className="text-xs">Department override</Label>
+                  <Select value={quickForm.department} onValueChange={(value) => setQuickForm((current) => ({ ...current, department: value as typeof current.department }))}>
+                    <SelectTrigger className="bg-background border-border">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto-detect</SelectItem>
+                      {departmentOptions.filter((option) => option.value !== "all").map((department) => (
+                        <SelectItem key={department.value} value={department.value}>
+                          {department.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Difficulty override</Label>
+                  <Select value={quickForm.difficulty} onValueChange={(value) => setQuickForm((current) => ({ ...current, difficulty: value as typeof current.difficulty }))}>
+                    <SelectTrigger className="bg-background border-border">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto-detect</SelectItem>
+                      <SelectItem value="1">Level 1</SelectItem>
+                      <SelectItem value="2">Level 2</SelectItem>
+                      <SelectItem value="3">Level 3</SelectItem>
+                      <SelectItem value="4">Level 4</SelectItem>
+                      <SelectItem value="5">Level 5</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <p className="text-xs text-muted-foreground max-w-2xl">
+              The quick generator uses active policies first, then any supporting text you paste here. The advanced template editor is still available if you need full manual control.
+            </p>
+            <Button
+              onClick={submitQuickScenario}
+              disabled={createFromBriefMutation.isPending}
+              className="bg-teal text-slate-deep hover:bg-teal/90 gap-2"
+            >
+              {createFromBriefMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              Generate Scenario
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {data.length === 0 ? (
         <Card className="bg-card border-border">
@@ -191,7 +384,7 @@ export default function ManagerScenarios() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="bg-card border-border max-w-3xl">
           <DialogHeader>
-            <DialogTitle>Create Scenario Template</DialogTitle>
+            <DialogTitle>Advanced Scenario Template Builder</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2 max-h-[75vh] overflow-y-auto pr-1">
             <div className="grid grid-cols-2 gap-4">
@@ -287,10 +480,10 @@ export default function ManagerScenarios() {
                 <Label className="text-xs">Recommended Turns</Label>
                 <Input
                   type="number"
-                  min={2}
-                  max={12}
+                  min={3}
+                  max={5}
                   value={form.recommendedTurns}
-                  onChange={(event) => setForm({ ...form, recommendedTurns: Math.max(2, Math.min(12, parseInt(event.target.value || "4", 10))) })}
+                  onChange={(event) => setForm({ ...form, recommendedTurns: Math.max(3, Math.min(5, parseInt(event.target.value || "4", 10))) })}
                   className="bg-background border-border"
                 />
               </div>
@@ -394,49 +587,7 @@ export default function ManagerScenarios() {
               Cancel
             </Button>
             <Button
-              onClick={() => {
-                if (
-                  !form.title.trim() ||
-                  !form.scenarioFamily.trim() ||
-                  !form.targetRole.trim() ||
-                  !form.situationSummary.trim() ||
-                  !form.openingLine.trim()
-                ) {
-                  toast.error("Title, family, target role, summary, and opening line are required");
-                  return;
-                }
-
-                const splitLines = (value: string) =>
-                  value
-                    .split("\n")
-                    .map((line) => line.trim())
-                    .filter(Boolean);
-
-                createMutation.mutate({
-                  title: form.title.trim(),
-                  department: form.department,
-                  scenarioFamily: form.scenarioFamily.trim(),
-                  targetRole: form.targetRole.trim(),
-                  difficulty: form.difficulty,
-                  emotionalIntensity: form.emotionalIntensity,
-                  complexity: form.complexity,
-                  customerPersona: {
-                    name: form.customerName.trim() || "Guest",
-                    age_band: form.customerAgeBand.trim() || "adult",
-                    membership_context: form.membershipContext.trim() || "member",
-                    communication_style: form.communicationStyle.trim() || "direct",
-                    initial_emotion: form.initialEmotion.trim() || "frustrated",
-                    patience_level: form.patienceLevel.trim() || "medium",
-                  },
-                  situationSummary: form.situationSummary.trim(),
-                  openingLine: form.openingLine.trim(),
-                  hiddenFacts: splitLines(form.hiddenFacts),
-                  approvedResolutionPaths: splitLines(form.approvedResolutionPaths),
-                  requiredBehaviors: splitLines(form.requiredBehaviors),
-                  criticalErrors: splitLines(form.criticalErrors),
-                  recommendedTurns: form.recommendedTurns,
-                });
-              }}
+              onClick={submitManualTemplate}
               disabled={createMutation.isPending}
               className="bg-teal text-slate-deep hover:bg-teal/90"
             >

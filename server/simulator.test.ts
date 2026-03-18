@@ -3,6 +3,7 @@ import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 import { ENV } from "./_core/env";
 import { evaluationResultSchema, type StateUpdateResult } from "./services/ai/contracts";
+import { generateScenario } from "./services/ai/pipeline";
 import {
   applyScenarioPriorityWeights,
   buildStateHistoryEvidence,
@@ -21,7 +22,15 @@ vi.mock("./db", () => ({
 }));
 
 import { invokeLLM } from "./_core/llm";
+import { getDb } from "./db";
 const mockInvokeLLM = vi.mocked(invokeLLM);
+const mockGetDb = vi.mocked(getDb);
+const DEFAULT_FORGE_API_KEY = ENV.forgeApiKey;
+
+afterEach(() => {
+  ENV.forgeApiKey = DEFAULT_FORGE_API_KEY;
+  mockGetDb.mockResolvedValue(null);
+});
 
 function createPublicContext(): TrpcContext {
   return {
@@ -73,6 +82,41 @@ function createAuthContext(): TrpcContext {
   };
 }
 
+function createAdminContext(): TrpcContext {
+  return {
+    user: {
+      id: 99,
+      openId: "admin-user",
+      email: "admin@wsc.com",
+      name: "Scenario Admin",
+      loginMethod: "manus",
+      role: "admin",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSignedIn: new Date(),
+    },
+    actorUser: {
+      id: 99,
+      openId: "admin-user",
+      email: "admin@wsc.com",
+      name: "Scenario Admin",
+      loginMethod: "manus",
+      role: "admin",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSignedIn: new Date(),
+    },
+    impersonation: null,
+    req: {
+      protocol: "https",
+      headers: {},
+    } as TrpcContext["req"],
+    res: {
+      clearCookie: vi.fn(),
+    } as unknown as TrpcContext["res"],
+  };
+}
+
 function mockLLMResponse(data: unknown) {
   mockInvokeLLM.mockResolvedValueOnce({
     id: "test-id",
@@ -109,6 +153,18 @@ function createScenarioFixture(overrides: Record<string, unknown> = {}) {
     situation_summary: "A member sees charges they do not understand and wants a clear answer.",
     opening_line: "I need to know why I was charged twice and what you are going to do about it.",
     hidden_facts: ["One charge is pending and one is final."],
+    motive: "Get a straight answer and a real next step.",
+    hidden_context: "The member has already looked at their bank app and thinks the club made a mistake.",
+    personality_style: "Direct, skeptical, and detail-focused",
+    past_history: "They have been a member long enough to expect clear answers.",
+    pressure_context: "They are checking this between errands and do not want to chase billing later.",
+    friction_points: ["The member believes they were charged twice."],
+    emotional_triggers: ["Vague answers", "being told to wait without detail"],
+    likely_assumptions: ["The club made a billing mistake."],
+    what_hearing_them_out_sounds_like: ["Answering the direct billing question plainly."],
+    credible_next_steps: ["Confirm which charge is pending and who is following up if billing review is needed."],
+    calm_down_if: ["The employee explains the difference between pending and finalized charges clearly."],
+    lose_trust_if: ["The employee talks around the issue or closes early."],
     approved_resolution_paths: ["Verify the ledger and explain the next step clearly."],
     required_behaviors: ["Show empathy", "Take ownership", "Give a direct next step"],
     critical_errors: ["Blame the customer", "Guess at billing policy"],
@@ -244,6 +300,8 @@ function computeExpectedLocalFallbackCategoryScores(params: {
 describe("simulator.generateScenario", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetDb.mockResolvedValue(null);
+    ENV.forgeApiKey = DEFAULT_FORGE_API_KEY;
   });
 
   it("calls LLM and returns a parsed scenario with branch logic", async () => {
@@ -331,6 +389,58 @@ describe("simulator.generateScenario", () => {
 
     expect((result.scenario as any).scenario_id).toMatch(/^seed-/);
     expect((result.scenario as any).recommended_turns).toBeGreaterThanOrEqual(3);
+  });
+
+  it("includes a manager brief and supporting context when generating from a short prompt", async () => {
+    ENV.forgeApiKey = "test-key";
+    mockLLMResponse(createScenarioFixture());
+
+    await generateScenario({
+      department: "customer_service",
+      employeeRole: "Front Desk Associate",
+      difficulty: 3,
+      mode: "in_person",
+      scenarioFamily: "billing_confusion",
+      generationBrief: "A member thinks they were charged twice and wants a concrete next step.",
+      supportingContext: "One charge may be pending. Do not allow vague reassurance to count as success.",
+    });
+
+    const prompt = mockInvokeLLM.mock.calls.at(-1)?.[0]?.messages?.[1]?.content;
+    expect(prompt).toContain("Manager scenario brief:");
+    expect(prompt).toContain("charged twice");
+    expect(prompt).toContain("Do not allow vague reassurance to count as success.");
+  });
+});
+
+describe("scenarios.createFromBrief", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ENV.forgeApiKey = DEFAULT_FORGE_API_KEY;
+  });
+
+  it("creates a saved template from a short brief and safe fallback inference", async () => {
+    ENV.forgeApiKey = "";
+
+    const valuesMock = vi.fn().mockResolvedValue(undefined);
+    mockGetDb.mockResolvedValue({
+      insert: vi.fn(() => ({ values: valuesMock })),
+    } as any);
+
+    const caller = appRouter.createCaller(createAdminContext());
+    const result = await caller.scenarios.createFromBrief({
+      brief: "A longtime member thinks they were billed twice and wants a real billing answer instead of being brushed off.",
+      mode: "in_person",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.usedFallback).toBe(true);
+    expect(result.template.department).toBe("customer_service");
+    expect(result.template.scenarioFamily).toBe("billing_confusion");
+    expect(valuesMock).toHaveBeenCalled();
+
+    const insertedTemplate = valuesMock.mock.calls[0]?.[0];
+    expect(insertedTemplate.title.toLowerCase()).toContain("billed twice");
+    expect(insertedTemplate.situationSummary.toLowerCase()).toContain("billed twice");
   });
 });
 

@@ -1457,6 +1457,8 @@ export async function generateScenario(params: {
   mode: string;
   scenarioFamily?: string;
   employeeLevelEstimate?: string;
+  generationBrief?: string;
+  supportingContext?: string;
 }): Promise<ScenarioDirectorResult> {
   const departmentKey = (params.department in scenarioFamiliesByDepartment
     ? params.department
@@ -1467,7 +1469,20 @@ export async function generateScenario(params: {
   const policyContext = await retrievePolicyContext({
     department: departmentKey,
     scenarioFamily: params.scenarioFamily,
+    scenarioTitle: params.generationBrief,
+    situationSummary: params.generationBrief,
   });
+  const briefBlock = params.generationBrief
+    ? `Manager scenario brief:
+${params.generationBrief}
+
+Additional supporting text:
+${params.supportingContext?.trim() ? params.supportingContext.trim() : "None provided."}
+
+Use the manager brief to shape the situation, customer pressure, and operational details.
+If the brief is vague, make the smallest realistic assumptions.
+If the brief conflicts with approved policy, keep the policy correct and use the brief only to shape the scenario.`
+    : "";
   const prompt = `Build 1 advanced WSC scenario.
 Inputs:
 Department: ${departmentLabels[departmentKey]}
@@ -1476,6 +1491,7 @@ Difficulty: ${params.difficulty}
 Mode: ${params.mode}
 Scenario family: ${params.scenarioFamily || `pick one realistic option from this department only: ${supportedFamilies}`}
 Employee level estimate: ${params.employeeLevelEstimate || "unknown"}
+${briefBlock ? `\n${briefBlock}\n` : ""}
 
 Requirements:
 - Keep it specific to Woodinville Sports Club.

@@ -53,6 +53,13 @@ import { ENV } from "./_core/env";
 import { createSignedStorageUrl } from "./storage";
 import { WSC_SCENARIO_TEMPLATE_SEEDS } from "./wsc-seed-data";
 import { deriveCompletionCriteria, deriveFailureCriteria, deriveScenarioHumanContext } from "../shared/wsc-content";
+import { scenarioDirectorResultSchema, type ScenarioDirectorResult } from "./services/ai/contracts";
+import {
+  buildBriefGenerationLabel,
+  buildFallbackScenarioFromBrief,
+  buildScenarioTemplateInsertFromScenario,
+  inferScenarioBriefHints,
+} from "./services/scenario-authoring";
 
 // ─── Manager Procedure (manager, admin, super_admin) ───
 const managerProcedure = protectedProcedure.use(async ({ ctx, next }) => {
@@ -79,12 +86,12 @@ function clampRecommendedTurns(value?: number) {
   return Math.max(2, Math.min(12, value ?? 4));
 }
 
-function buildScenarioFromTemplate(t: typeof scenarioTemplates.$inferSelect) {
+function buildScenarioFromTemplate(t: typeof scenarioTemplates.$inferSelect): ScenarioDirectorResult {
   const humanContext = deriveScenarioHumanContext({
     department: t.department,
     scenario_family: t.scenarioFamily,
   });
-  return {
+  return scenarioDirectorResultSchema.parse({
     scenario_id: `tmpl-${t.id}`,
     department: t.department,
     employee_role: t.targetRole,
@@ -121,7 +128,7 @@ function buildScenarioFromTemplate(t: typeof scenarioTemplates.$inferSelect) {
       completionRules: t.completionRules as any,
     }),
     recommended_turns: clampRecommendedTurns(t.recommendedTurns),
-  };
+  });
 }
 
 function buildScenarioFromSeed(input: {
@@ -129,7 +136,7 @@ function buildScenarioFromSeed(input: {
   scenarioFamily?: string;
   difficulty: number;
   employeeRole: string;
-}) {
+}): ScenarioDirectorResult {
   const candidates = WSC_SCENARIO_TEMPLATE_SEEDS
     .filter((seed) => seed.department === input.department)
     .filter((seed) => !input.scenarioFamily || seed.scenarioFamily === input.scenarioFamily)
@@ -147,7 +154,7 @@ function buildScenarioFromSeed(input: {
     scenario_family: selected.scenarioFamily,
   });
 
-  return {
+  return scenarioDirectorResultSchema.parse({
     scenario_id: `seed-${selected.scenarioFamily}-${selected.difficulty}`,
     department: selected.department,
     employee_role: input.employeeRole || selected.targetRole,
@@ -186,7 +193,7 @@ function buildScenarioFromSeed(input: {
       failureCriteria: selected.failureCriteria,
     }),
     recommended_turns: clampRecommendedTurns(selected.recommendedTurns),
-  };
+  });
 }
 
 // ─── Router ───
@@ -1054,6 +1061,95 @@ export const appRouter = router({
         await db.update(scenarioTemplates).set(updateData as any).where(eq(scenarioTemplates.id, id));
         await logAudit(ctx.user.id, input.isActive !== undefined ? "scenario_toggle" : "scenario_edit", "scenario_template", id, updateData);
         return { success: true };
+      }),
+
+    createFromBrief: adminProcedure
+      .input(z.object({
+        brief: z.string().trim().min(12),
+        supportingContext: z.string().trim().optional(),
+        department: departmentEnum.optional(),
+        difficulty: z.number().min(1).max(5).optional(),
+        mode: sessionModeEnum.default("in_person"),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Scenario storage is unavailable right now." });
+        }
+
+        const hints = inferScenarioBriefHints({
+          brief: input.brief,
+          supportingContext: input.supportingContext,
+          departmentOverride: input.department,
+          difficultyOverride: input.difficulty,
+        });
+
+        let scenario;
+        let usedFallback = false;
+
+        if (!ENV.forgeApiKey) {
+          usedFallback = true;
+          scenario = buildFallbackScenarioFromBrief({
+            brief: input.brief,
+            hints,
+            seedScenario: buildScenarioFromSeed({
+              department: hints.department,
+              scenarioFamily: hints.scenarioFamily,
+              difficulty: hints.difficulty,
+              employeeRole: hints.employeeRole,
+            }),
+          });
+        } else {
+          try {
+            scenario = await generateScenario({
+              department: hints.department,
+              employeeRole: hints.employeeRole,
+              difficulty: hints.difficulty,
+              mode: input.mode,
+              scenarioFamily: hints.scenarioFamily,
+              generationBrief: input.brief,
+              supportingContext: input.supportingContext,
+            });
+          } catch (error) {
+            console.error("[Scenario Authoring] AI brief generation failed, falling back to bundled catalog:", error);
+            usedFallback = true;
+            scenario = buildFallbackScenarioFromBrief({
+              brief: input.brief,
+              hints,
+              seedScenario: buildScenarioFromSeed({
+                department: hints.department,
+                scenarioFamily: hints.scenarioFamily,
+                difficulty: hints.difficulty,
+                employeeRole: hints.employeeRole,
+              }),
+            });
+          }
+        }
+
+        const templateValues = buildScenarioTemplateInsertFromScenario({
+          scenario,
+          brief: input.brief,
+          createdBy: ctx.user.id,
+        });
+
+        await db.insert(scenarioTemplates).values(templateValues);
+        await logAudit(ctx.user.id, "scenario_create", "scenario_template", undefined, {
+          title: templateValues.title,
+          source: "brief",
+          usedFallback,
+          inferred: buildBriefGenerationLabel(hints),
+        });
+
+        return {
+          success: true,
+          usedFallback,
+          template: {
+            title: templateValues.title,
+            department: templateValues.department,
+            scenarioFamily: templateValues.scenarioFamily,
+            difficulty: templateValues.difficulty,
+          },
+        };
       }),
   }),
 

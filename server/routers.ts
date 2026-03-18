@@ -1091,6 +1091,7 @@ export const appRouter = router({
           usedFallback = true;
           scenario = buildFallbackScenarioFromBrief({
             brief: input.brief,
+            supportingContext: input.supportingContext,
             hints,
             seedScenario: buildScenarioFromSeed({
               department: hints.department,
@@ -1115,6 +1116,7 @@ export const appRouter = router({
             usedFallback = true;
             scenario = buildFallbackScenarioFromBrief({
               brief: input.brief,
+              supportingContext: input.supportingContext,
               hints,
               seedScenario: buildScenarioFromSeed({
                 department: hints.department,

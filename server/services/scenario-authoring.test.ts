@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildScenarioTemplateInsertFromScenario, inferScenarioBriefHints } from "./scenario-authoring";
+import { buildFallbackScenarioFromBrief, buildScenarioTemplateInsertFromScenario, inferScenarioBriefHints } from "./scenario-authoring";
 import type { ScenarioDirectorResult } from "./ai/contracts";
 
 function createScenario(overrides: Partial<ScenarioDirectorResult> = {}): ScenarioDirectorResult {
@@ -21,10 +21,10 @@ function createScenario(overrides: Partial<ScenarioDirectorResult> = {}): Scenar
     opening_line: "Why are there two charges on my account right now?",
     hidden_facts: ["One charge is pending.", "One is finalized."],
     motive: "Get a real explanation and a usable next step.",
-    hidden_context: "",
+    hidden_context: "The member already checked their bank app and thinks the club made a mistake.",
     personality_style: "Direct and detail-focused",
-    past_history: "",
-    pressure_context: "",
+    past_history: "They have enough prior experience with the club to expect a straight answer.",
+    pressure_context: "They do not want to chase billing later and want clarity now.",
     friction_points: ["Member thinks the club ran the charge twice."],
     emotional_triggers: [],
     likely_assumptions: [],
@@ -80,6 +80,15 @@ describe("inferScenarioBriefHints", () => {
     expect(hints.scenarioFamily).toBe("emergency_response");
     expect(hints.difficulty).toBe(5);
   });
+
+  it("prefers a strong family match even when department keywords are sparse", () => {
+    const hints = inferScenarioBriefHints({
+      brief: "A guest reports a slippery wet-floor fall risk near the entry and wants immediate help.",
+    });
+
+    expect(hints.department).toBe("mod_emergency");
+    expect(hints.scenarioFamily).toBe("slippery_entry_complaint");
+  });
 });
 
 describe("buildScenarioTemplateInsertFromScenario", () => {
@@ -96,5 +105,71 @@ describe("buildScenarioTemplateInsertFromScenario", () => {
     expect(template.recommendedTurns).toBe(5);
     expect(template.emotionalIntensity).toBe("high");
     expect(template.complexity).toBe("ambiguous");
+  });
+});
+
+describe("buildFallbackScenarioFromBrief", () => {
+  it("adapts the fallback opening line and facts to the manager brief instead of reusing the seed verbatim", () => {
+    const fallback = buildFallbackScenarioFromBrief({
+      brief: "A friendly longtime member signed up for a class, then noticed a charge that does not look right and wants a clear explanation.",
+      supportingContext: "- The class registration is active\n- The member is not angry yet\n- A valid next step must include owner, action, and timeline",
+      hints: inferScenarioBriefHints({
+        brief: "A friendly longtime member signed up for a class, then noticed a charge that does not look right and wants a clear explanation.",
+      }),
+      seedScenario: createScenario(),
+    });
+
+    expect(fallback.opening_line.toLowerCase()).toContain("class");
+    expect(fallback.customer_persona.initial_emotion).toBe("concerned");
+    expect(fallback.hidden_facts[0]).toContain("class registration");
+    expect(fallback.hidden_facts[0].toLowerCase()).not.toContain("family add-on");
+    expect(fallback.hidden_facts.some((fact) => fact.toLowerCase().includes("owner, action, and timeline"))).toBe(false);
+    expect(fallback.approved_resolution_paths[0].toLowerCase()).toContain("class registration");
+    expect(fallback.completion_rules.resolved_if[0].toLowerCase()).toContain("direct explanation");
+  });
+
+  it("differentiates recurring program billing from generic double-charge fallbacks", () => {
+    const fallback = buildFallbackScenarioFromBrief({
+      brief: "A longtime member noticed something odd with their monthly program payment and wants to know whether the billing is correct.",
+      hints: inferScenarioBriefHints({
+        brief: "A longtime member noticed something odd with their monthly program payment and wants to know whether the billing is correct.",
+      }),
+      seedScenario: createScenario(),
+    });
+
+    expect(fallback.opening_line.toLowerCase()).toContain("monthly program payment");
+    expect(fallback.hidden_facts[0].toLowerCase()).toContain("recurring program payment");
+    expect(fallback.approved_resolution_paths[0].toLowerCase()).toContain("recurring program payment");
+  });
+
+  it("merges supplemental factual context instead of replacing the derived hidden truth", () => {
+    const fallback = buildFallbackScenarioFromBrief({
+      brief: "A member says they were charged twice and wants a straight explanation.",
+      supportingContext: "- The member already called once and did not get a callback",
+      hints: inferScenarioBriefHints({
+        brief: "A member says they were charged twice and wants a straight explanation.",
+      }),
+      seedScenario: createScenario(),
+    });
+
+    expect(fallback.hidden_facts.some((fact) => fact.toLowerCase().includes("pending"))).toBe(true);
+    expect(fallback.hidden_facts.some((fact) => fact.toLowerCase().includes("already called once"))).toBe(true);
+  });
+
+  it("prefers the hinted family over the seed family when shaping fallback content", () => {
+    const emergencySeed = createScenario({
+      scenario_family: "billing_confusion",
+      department: "customer_service",
+    });
+    const fallback = buildFallbackScenarioFromBrief({
+      brief: "Someone collapsed near the entry and the manager on duty needs to take control until EMS arrives.",
+      hints: inferScenarioBriefHints({
+        brief: "Someone collapsed near the entry and the manager on duty needs to take control until EMS arrives.",
+      }),
+      seedScenario: emergencySeed,
+    });
+
+    expect(fallback.scenario_family).toBe("emergency_response");
+    expect(fallback.opening_line.toLowerCase()).toContain("collapsed");
   });
 });

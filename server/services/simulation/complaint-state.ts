@@ -339,7 +339,7 @@ function inferNextStepTimeline(analysis: EmployeeUtteranceAnalysis, employeeMess
 }
 
 function inferNextStepAction(analysis: EmployeeUtteranceAnalysis, employeeMessage: string) {
-  const match = employeeMessage.match(/\b(refund|credit|reverse|correction|correct|investigate|investigation|submit|process|confirm|email|call|rebook|book|reserve|waitlist|cancel|check with|handle|review|update|escalate|transfer)\b[^.?!,;]*/i);
+  const match = employeeMessage.match(/\b(refund|credit|reverse|correction|correct|investigate|investigation|submit|process|confirm|email|call|rebook|book|reserve|waitlist|cancel|check with|handle|review|update|escalate|transfer|set up|walk you through|get (?:this|that|the next step|you) started|get (?:this|that|the next step) moving|schedule|show you|introduce you|line up|arrange|send over|start)\b[^.?!,;]*/i);
   if (match?.[0]) {
     return match[0].replace(/\s+/g, " ").trim();
   }
@@ -375,6 +375,17 @@ function hasConcreteAction(analysis: EmployeeUtteranceAnalysis, normalizedMessag
     /\bcheck with\b/,
     /\bhandle\b/,
     /\breview\b/,
+    /\bset up\b/,
+    /\bwalk you through\b/,
+    /\bget (?:this|that|the next step|you) started\b/,
+    /\bget (?:this|that|the next step) moving\b/,
+    /\bschedule\b/,
+    /\bshow you\b/,
+    /\bintroduce you\b/,
+    /\bline up\b/,
+    /\barrange\b/,
+    /\bsend over\b/,
+    /\bstart\b/,
   ]);
 }
 

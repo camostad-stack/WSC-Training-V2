@@ -786,8 +786,10 @@ describe("simulator.customerReply", () => {
       employeeResponse: "Based on that, I recommend the flexible range membership, and I can get the next step moving for you today.",
     });
 
-    expect(thirdTurn.customerReply.customer_reply.toLowerCase()).toMatch(/i can picture the next step now|next step now|what happens next now/);
+    expect(thirdTurn.customerReply.customer_reply.toLowerCase()).toMatch(/that answers it|specific enough for me to work with|i know the next step now/);
     expect(thirdTurn.customerReply.customer_reply).not.toContain("what would you actually recommend");
+    expect(thirdTurn.stateUpdate.continue_simulation).toBe(false);
+    expect(thirdTurn.stateUpdate.terminal_outcome_state).toBe("RESOLVED");
   });
 });
 
